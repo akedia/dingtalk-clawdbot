@@ -1,0 +1,29 @@
+{
+  "name": "@clawdbot/dingtalk",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Clawdbot DingTalk channel plugin (Stream Mode)",
+  "clawdbot": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "dingtalk",
+      "label": "DingTalk",
+      "selectionLabel": "DingTalk (\u9489\u9489)",
+      "detailLabel": "DingTalk",
+      "docsPath": "/channels/dingtalk",
+      "docsLabel": "dingtalk",
+      "blurb": "DingTalk bot via Stream Mode (WebSocket)",
+      "aliases": [
+        "dingding",
+        "dd"
+      ],
+      "order": 75,
+      "quickstartAllowFrom": true
+    }
+  },
+  "dependencies": {
+    "dingtalk-stream": "^2.1.4"
+  }
+}

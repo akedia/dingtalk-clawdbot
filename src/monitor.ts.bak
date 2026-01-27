@@ -1,0 +1,210 @@
+import type { DingTalkRobotMessage, ResolvedDingTalkAccount } from "./types.js";
+import { sendViaSessionWebhook, sendDingTalkRestMessage } from "./api.js";
+import { getDingTalkRuntime } from "./runtime.js";
+
+export interface DingTalkMonitorContext {
+  account: ResolvedDingTalkAccount;
+  cfg: any;
+  abortSignal: AbortSignal;
+  log?: any;
+  setStatus?: (update: Record<string, unknown>) => void;
+}
+
+export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise<void> {
+  const { account, cfg, abortSignal, log, setStatus } = ctx;
+
+  if (!account.clientId || !account.clientSecret) {
+    throw new Error("DingTalk clientId/clientSecret not configured");
+  }
+
+  let DWClient: any;
+  let TOPIC_ROBOT: any;
+  try {
+    const mod = await import("dingtalk-stream");
+    DWClient = mod.DWClient || mod.default?.DWClient || mod.default;
+    TOPIC_ROBOT = mod.TOPIC_ROBOT || mod.default?.TOPIC_ROBOT || "/v1.0/im/bot/messages/get";
+  } catch (err) {
+    throw new Error("Failed to import dingtalk-stream SDK: " + err);
+  }
+
+  if (!DWClient) throw new Error("DWClient not found in dingtalk-stream");
+
+  log?.info?.("[dingtalk:" + account.accountId + "] Starting Stream...");
+
+  const client = new DWClient({
+    clientId: account.clientId,
+    clientSecret: account.clientSecret,
+  });
+
+  client.registerCallbackListener(TOPIC_ROBOT, async (downstream: any) => {
+    try {
+      const data: DingTalkRobotMessage = typeof downstream.data === "string"
+        ? JSON.parse(downstream.data) : downstream.data;
+      setStatus?.({ lastInboundAt: Date.now() });
+      await processInboundMessage(data, ctx);
+    } catch (err) {
+      log?.info?.("[dingtalk] Message error: " + err);
+    }
+    return { status: "SUCCESS", message: "OK" };
+  });
+
+  client.registerAllEventListener((msg: any) => {
+    return { status: "SUCCESS", message: "OK" };
+  });
+
+  const onAbort = () => {
+    try { client.disconnect?.(); } catch {}
+    setStatus?.({ running: false, lastStopAt: Date.now() });
+  };
+  if (abortSignal) {
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+  }
+
+  await client.connect();
+  log?.info?.("[dingtalk:" + account.accountId + "] Stream connected");
+  setStatus?.({ running: true, lastStartAt: Date.now() });
+}
+
+async function processInboundMessage(
+  msg: DingTalkRobotMessage,
+  ctx: DingTalkMonitorContext,
+): Promise<void> {
+  const { account, cfg, log, setStatus } = ctx;
+  const runtime = getDingTalkRuntime();
+
+  const isDm = msg.conversationType === "1";
+  const isGroup = msg.conversationType === "2";
+  const rawBody = msg.text?.content?.trim() ?? "";
+  if (!rawBody) return;
+
+  const senderId = msg.senderStaffId || msg.senderId;
+  const senderName = msg.senderNick || "";
+  const conversationId = msg.conversationId;
+
+  log?.info?.("[dingtalk] " + (isDm ? "DM" : "Group") + " from " + senderName + ": " + rawBody.slice(0, 50));
+
+  // DM access control
+  if (isDm) {
+    const dmConfig = account.config.dm ?? {};
+    if (dmConfig.enabled === false) return;
+    const dmPolicy = dmConfig.policy ?? "pairing";
+    if (dmPolicy === "disabled") return;
+    if (dmPolicy !== "open") {
+      const allowFrom = (dmConfig.allowFrom ?? []).map(String);
+      if (!isSenderAllowed(senderId, allowFrom)) {
+        log?.info?.("[dingtalk] DM denied for " + senderId);
+        if (dmPolicy === "pairing" && msg.sessionWebhook) {
+          await sendViaSessionWebhook(
+            msg.sessionWebhook,
+            "Access denied. Your staffId: " + senderId + "\nAsk admin to add you.",
+          ).catch(() => {});
+        }
+        return;
+      }
+    }
+  }
+
+  // Group access control
+  if (isGroup) {
+    const groupPolicy = account.config.groupPolicy ?? "allowlist";
+    if (groupPolicy === "disabled") return;
+    const requireMention = account.config.requireMention !== false;
+    if (requireMention && !msg.isInAtList) return;
+  }
+
+  const sessionKey = "dingtalk:" + account.accountId + ":" + (isDm ? "dm" : "group") + ":" + conversationId;
+
+  const replyTarget = {
+    sessionWebhook: msg.sessionWebhook,
+    sessionWebhookExpiry: msg.sessionWebhookExpiredTime,
+    conversationId,
+    senderId,
+    isDm,
+    account,
+  };
+
+  try {
+    if (runtime?.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
+      const ctxPayload = {
+        Body: rawBody,
+        RawBody: rawBody,
+        CommandBody: rawBody,
+        From: "dingtalk:" + senderId,
+        To: "dingtalk:" + conversationId,
+        SessionKey: sessionKey,
+        AccountId: account.accountId,
+        ChatType: isDm ? "direct" : "group",
+        ConversationLabel: isDm ? senderName : (msg.conversationTitle ?? conversationId),
+        SenderName: senderName || undefined,
+        SenderId: senderId,
+        WasMentioned: isGroup ? msg.isInAtList : undefined,
+        Provider: "dingtalk",
+        Surface: "dingtalk",
+        MessageSid: msg.msgId,
+        OriginatingChannel: "dingtalk",
+        OriginatingTo: "dingtalk:" + conversationId,
+      };
+
+      await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+        ctx: ctxPayload,
+        cfg,
+        dispatcherOptions: {
+          deliver: async (payload: any) => {
+            if (payload.text) {
+              await deliverReply(replyTarget, payload.text, log);
+              setStatus?.({ lastOutboundAt: Date.now() });
+            }
+          },
+          onError: (err: any) => {
+            log?.info?.("[dingtalk] Reply error: " + err);
+          },
+        },
+      });
+    } else {
+      log?.info?.("[dingtalk] Runtime dispatch not available");
+    }
+  } catch (err) {
+    log?.info?.("[dingtalk] Dispatch error: " + err);
+  }
+}
+
+async function deliverReply(target: any, text: string, log?: any): Promise<void> {
+  const now = Date.now();
+  const chunkLimit = 2000;
+  const chunks: string[] = [];
+  if (text.length <= chunkLimit) {
+    chunks.push(text);
+  } else {
+    for (let i = 0; i < text.length; i += chunkLimit) {
+      chunks.push(text.slice(i, i + chunkLimit));
+    }
+  }
+
+  for (const chunk of chunks) {
+    try {
+      if (target.sessionWebhook && now < target.sessionWebhookExpiry) {
+        await sendViaSessionWebhook(target.sessionWebhook, chunk);
+      } else if (target.account.clientId && target.account.clientSecret) {
+        await sendDingTalkRestMessage({
+          clientId: target.account.clientId,
+          clientSecret: target.account.clientSecret,
+          robotCode: target.account.robotCode || target.account.clientId,
+          userId: target.isDm ? target.senderId : undefined,
+          conversationId: !target.isDm ? target.conversationId : undefined,
+          text: chunk,
+        });
+      }
+    } catch (err) {
+      log?.info?.("[dingtalk] Deliver error: " + err);
+    }
+  }
+}
+
+function isSenderAllowed(senderId: string, allowFrom: string[]): boolean {
+  if (allowFrom.includes("*")) return true;
+  const normalized = senderId.trim().toLowerCase();
+  return allowFrom.some((entry) => {
+    const e = String(entry).trim().toLowerCase();
+    return e === normalized;
+  });
+}

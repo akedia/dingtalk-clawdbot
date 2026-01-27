@@ -1,0 +1,17 @@
+{
+  "channels": {
+    "dingtalk": {
+      "enabled": true,
+      "clientId": "YOUR_DINGTALK_APP_KEY",
+      "clientSecret": "YOUR_DINGTALK_APP_SECRET",
+      "dm": {
+        "policy": "pairing",
+        "allowFrom": ["YOUR_STAFF_ID"]
+      },
+      "groupPolicy": "allowlist",
+      "groupAllowlist": ["YOUR_GROUP_CONVERSATION_ID"],
+      "requireMention": true,
+      "messageFormat": "text"
+    }
+  }
+}
