@@ -34,3 +34,12 @@ npm-debug.log*
 
 # Local development notes (do not commit)
 .claude/
+
+# Backup files
+*.backup
+*.backup-*
+*.bak
+*.before-*
+
+# Build artifacts
+*.tgz
