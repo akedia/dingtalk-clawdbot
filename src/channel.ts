@@ -4,6 +4,25 @@ import { startDingTalkMonitor } from './monitor.js';
 import { sendDingTalkRestMessage } from './api.js';
 import { probeDingTalk } from './probe.js';
 
+/**
+ * Parse outbound `to` address, stripping optional channel prefix.
+ * Handles: "dm:id", "group:id", "dingtalk:dm:id", "dingtalk:group:id",
+ * and bare "id" (treated as DM userId).
+ */
+function parseOutboundTo(to: string): { type: string; id: string } {
+  const parts = to.split(':');
+  // Strip channel prefix: "dingtalk:dm:id" → "dm:id"
+  if (parts[0] === 'dingtalk' && parts.length > 2) {
+    parts.shift();
+  }
+  // Known types
+  if (parts[0] === 'dm' || parts[0] === 'group') {
+    return { type: parts[0], id: parts.slice(1).join(':') };
+  }
+  // Bare ID (no type prefix) — treat as DM userId
+  return { type: 'dm', id: to };
+}
+
 export const dingtalkPlugin = {
   id: 'dingtalk',
 
@@ -166,7 +185,7 @@ export const dingtalkPlugin = {
 
     async sendText({ to, text, accountId, cfg }) {
       const account = resolveDingTalkAccount({ cfg, accountId });
-      const [type, id] = to.split(':');
+      const { type, id } = parseOutboundTo(to);
 
       if (type === 'dm') {
         await sendDingTalkRestMessage({
@@ -204,12 +223,13 @@ export const dingtalkPlugin = {
       }
 
       const account = resolveDingTalkAccount({ cfg, accountId });
-      const [type, id] = to.split(':');
+      const { type, id } = parseOutboundTo(to);
 
-      // Build text message with image URL
+      // Build text message with image URL as markdown image
+      const imageMarkdown = `![image](${mediaUrl})`;
       const textMessage = text
-        ? `${text}\n\n图片链接: ${mediaUrl}`
-        : `图片链接: ${mediaUrl}`;
+        ? `${text}\n\n${imageMarkdown}`
+        : imageMarkdown;
 
       if (type === 'dm') {
         await sendDingTalkRestMessage({

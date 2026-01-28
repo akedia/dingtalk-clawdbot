@@ -52,6 +52,11 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   });
 
   client.registerCallbackListener(TOPIC_ROBOT, async (downstream: any) => {
+    // Immediately ACK to prevent DingTalk from retrying (60s timeout)
+    try {
+      client.socketResponse(downstream.headers.messageId, { status: 'SUCCESS' });
+    } catch (_) { /* best-effort ACK */ }
+
     try {
       const data: DingTalkRobotMessage = typeof downstream.data === "string"
         ? JSON.parse(downstream.data) : downstream.data;
@@ -221,6 +226,9 @@ async function extractRichTextContent(
       for (const item of content.richText) {
         if (item.msgType === "text" && item.content) {
           parts.push(item.content);
+        } else if (item.text) {
+          // DingTalk sometimes sends richText items as {text: "..."} without msgType wrapper
+          parts.push(item.text);
         } else if ((item.msgType === "picture" || item.pictureDownloadCode || item.downloadCode) && (item.downloadCode || item.pictureDownloadCode)) {
           const downloadCode = item.downloadCode || item.pictureDownloadCode;
           try {
@@ -425,8 +433,8 @@ async function processInboundMessage(
 
     if (userIds.length > 0 && account.clientId && account.clientSecret) {
       try {
-        // Batch query user info with 500ms timeout
-        const userInfoMap = await batchGetUserInfo(account.clientId, account.clientSecret, userIds, 500);
+        // Batch query user info (3s timeout — needs token fetch + API call)
+        const userInfoMap = await batchGetUserInfo(account.clientId, account.clientSecret, userIds, 3000);
 
         if (userInfoMap.size > 0) {
           // Build mention list: [@张三 @李四]
@@ -574,9 +582,13 @@ async function processInboundMessage(
         cfg: actualCfg,
         dispatcherOptions: {
           deliver: async (payload: any) => {
-            if (payload.text) {
-              await deliverReply(replyTarget, payload.text, log);
+            log?.info?.("[dingtalk] Deliver payload keys: " + Object.keys(payload || {}).join(',') + " text?=" + (typeof payload?.text) + " markdown?=" + (typeof payload?.markdown));
+            const textToSend = resolveDeliverText(payload, log);
+            if (textToSend) {
+              await deliverReply(replyTarget, textToSend, log);
               setStatus?.({ lastOutboundAt: Date.now() });
+            } else {
+              log?.info?.("[dingtalk] Deliver: no text resolved from payload");
             }
           },
           onError: (err: any) => {
@@ -676,8 +688,12 @@ async function dispatchWithFullPipeline(params: {
     responsePrefix: '',
     deliver: async (payload: any) => {
       try {
-        const textToSend = payload.markdown || payload.text;
-        if (!textToSend) return { ok: true };
+        log?.info?.("[dingtalk] Pipeline deliver payload keys: " + Object.keys(payload || {}).join(',') + " text?=" + (typeof payload?.text) + " markdown?=" + (typeof payload?.markdown));
+        const textToSend = resolveDeliverText(payload, log);
+        if (!textToSend) {
+          log?.info?.("[dingtalk] Pipeline deliver: no text resolved from payload");
+          return { ok: true };
+        }
         await deliverReply(replyTarget, textToSend, log);
         setStatus?.({ lastOutboundAt: Date.now() });
         return { ok: true };
@@ -697,6 +713,32 @@ async function dispatchWithFullPipeline(params: {
 
   // 10. Record activity
   rt.channel?.activity?.record?.('dingtalk', account.accountId, 'message');
+}
+
+/**
+ * Extract text + media URL from a deliver payload.
+ * The Clawdbot platform may send media URLs in separate fields (e.g. from the `message` tool).
+ * We merge them into the text as markdown image syntax so DingTalk can render them.
+ */
+function resolveDeliverText(payload: any, log?: any): string | undefined {
+  // payload.markdown may be a boolean flag (not the actual text), so check type
+  let text = (typeof payload.markdown === 'string' && payload.markdown) || payload.text;
+
+  // Guard: ensure text is a string (platform might send unexpected types)
+  if (text != null && typeof text !== 'string') {
+    log?.info?.("[dingtalk] Deliver payload has non-string text type=" + typeof text + ", payload keys=" + Object.keys(payload).join(','));
+    text = String(text);
+  }
+
+  const mediaUrl = payload.mediaUrl || payload.media || payload.imageUrl || payload.image;
+
+  if (mediaUrl && typeof mediaUrl === 'string' && mediaUrl.startsWith('http')) {
+    log?.info?.("[dingtalk] Deliver payload includes media URL: " + mediaUrl);
+    const imageMarkdown = `![image](${mediaUrl})`;
+    text = text ? `${text}\n\n${imageMarkdown}` : imageMarkdown;
+  }
+
+  return text || undefined;
 }
 
 async function deliverReply(target: any, text: string, log?: any): Promise<void> {
@@ -740,13 +782,17 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           log?.info?.("[dingtalk] Using sessionWebhook (attempt " + attempt + "/" + maxRetries + "), format=" + messageFormat);
-          log?.info?.("[dingtalk] Sending text: " + chunk.substring(0, 200));
+          log?.info?.("[dingtalk] Sending text (" + chunk.length + " chars): " + chunk.substring(0, 200));
+          let sendResult: { ok: boolean; errcode?: number; errmsg?: string };
           if (isMarkdown) {
-            await sendMarkdownViaSessionWebhook(target.sessionWebhook, "Reply", chunk);
+            sendResult = await sendMarkdownViaSessionWebhook(target.sessionWebhook, "Reply", chunk);
           } else {
-            await sendViaSessionWebhook(target.sessionWebhook, chunk);
+            sendResult = await sendViaSessionWebhook(target.sessionWebhook, chunk);
           }
-          log?.info?.("[dingtalk] SessionWebhook send OK");
+          if (!sendResult.ok) {
+            throw new Error(`SessionWebhook rejected: errcode=${sendResult.errcode}, errmsg=${sendResult.errmsg}`);
+          }
+          log?.info?.("[dingtalk] SessionWebhook send OK (errcode=" + (sendResult.errcode ?? 0) + ")");
           webhookSuccess = true;
           break;
         } catch (err) {

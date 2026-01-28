@@ -93,12 +93,16 @@ export async function getDingTalkAccessToken(clientId: string, clientSecret: str
 export async function sendViaSessionWebhook(
   sessionWebhook: string,
   text: string,
-): Promise<{ ok: boolean }> {
+): Promise<{ ok: boolean; errcode?: number; errmsg?: string }> {
   const res = await jsonPost(sessionWebhook, {
     msgtype: "text",
     text: { content: text },
   });
-  return { ok: res?.errcode === 0 || !res?.errcode };
+  const ok = res?.errcode === 0 || !res?.errcode;
+  if (!ok) {
+    console.warn(`[dingtalk] SessionWebhook text error: errcode=${res?.errcode}, errmsg=${res?.errmsg}`);
+  }
+  return { ok, errcode: res?.errcode, errmsg: res?.errmsg };
 }
 
 /** Send markdown via sessionWebhook */
@@ -106,12 +110,16 @@ export async function sendMarkdownViaSessionWebhook(
   sessionWebhook: string,
   title: string,
   text: string,
-): Promise<{ ok: boolean }> {
+): Promise<{ ok: boolean; errcode?: number; errmsg?: string }> {
   const res = await jsonPost(sessionWebhook, {
     msgtype: "markdown",
     markdown: { title, text },
   });
-  return { ok: res?.errcode === 0 || !res?.errcode };
+  const ok = res?.errcode === 0 || !res?.errcode;
+  if (!ok) {
+    console.warn(`[dingtalk] SessionWebhook markdown error: errcode=${res?.errcode}, errmsg=${res?.errmsg}`);
+  }
+  return { ok, errcode: res?.errcode, errmsg: res?.errmsg };
 }
 
 /** Send image via sessionWebhook using markdown format */

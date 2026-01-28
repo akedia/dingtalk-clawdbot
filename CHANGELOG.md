@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] - 2026-01-28
+
+### Fixed
+
+- **Outbound `to` parameter parsing** — bare userId (no `dm:` prefix) now correctly treated as DM target; previously silently dropped with ok:true
+- **SessionWebhook response validation** — `sendViaSessionWebhook()` and `sendMarkdownViaSessionWebhook()` now return errcode/errmsg and check `.ok`; failures trigger REST API fallback instead of being silently ignored
+- **Stream ACK timing** — immediately call `socketResponse()` on message receipt to prevent DingTalk 60-second retry timeout; previously awaited full AI processing before ACK
+- **`resolveDeliverText()` type safety** — check `typeof payload.markdown === 'string'` to avoid treating boolean flags as text content
+
+### Changed
+
+- **`parseOutboundTo()` enhanced** — handles `"dm:id"`, `"group:id"`, `"dingtalk:dm:id"`, `"dingtalk:group:id"`, and bare `"id"` (defaults to DM)
+- **`deliverReply()` error propagation** — throws on sessionWebhook rejection to trigger retry + REST API fallback
+- **Media URL merging** — `resolveDeliverText()` merges `payload.mediaUrl`/`payload.imageUrl` into text as markdown image syntax
+- **Webhook functions** return `{ ok, errcode, errmsg }` for proper error inspection
+
+## [1.3.0] - 2026-01-28
+
+### Added
+
+- **Full SDK Pipeline** — runtime feature detection for `dispatchReplyFromConfig` with 9-step SDK integration (routing, session, envelope, dispatch)
+- **Media support** — image download via `downloadPicture()`, audio/video/file recognition via `downloadMediaFile()`
+- **Smart Markdown detection** — `messageFormat: 'auto'` option with regex-based content detection
+- **Thinking indicator** — `showThinking` config option sends "正在思考..." before AI processing
+- **Activity recording** — `runtime.channel.activity.record()` calls for start/stop/message events
+- **`cleanupOldMedia()`** — generalized media cleanup (replaces `cleanupOldPictures`)
+
+### Changed
+
+- **Message extraction refactored** — `extractMessageContent()` switch-case structure for text/richText/picture/audio/video/file
+- **Config schema** — added `showThinking`, `messageFormat: 'auto'` option
+- **`sendMedia()` outbound** — uses markdown image syntax instead of plain URL text
+
 ## [1.2.0] - 2026-01-28
 
 ### 🎉 Major Features - Official Plugin Release
