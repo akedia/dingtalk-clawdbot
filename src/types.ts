@@ -51,6 +51,6 @@ export interface DingTalkChannelConfig {
   groupAllowlist?: string[];
   requireMention?: boolean;
   textChunkLimit?: number;
-  messageFormat?: 'text' | 'markdown';
+  messageFormat?: 'text' | 'markdown' | 'richtext';
   [key: string]: unknown;
 }

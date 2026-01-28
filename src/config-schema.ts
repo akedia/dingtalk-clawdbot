@@ -9,8 +9,8 @@ export const groupPolicySchema = z.enum(['disabled', 'allowlist', 'open'], {
   description: 'Group chat access control policy',
 });
 
-export const messageFormatSchema = z.enum(['text', 'markdown'], {
-  description: 'Message format for bot responses',
+export const messageFormatSchema = z.enum(['text', 'markdown', 'richtext'], {
+  description: 'Message format for bot responses (richtext is an alias for markdown)',
 });
 
 // DingTalk 配置 Schema
@@ -59,7 +59,8 @@ export const dingTalkConfigSchema = z.object({
     .describe(
       'Message format:\n' +
       '  - text: Plain text (recommended, supports tables)\n' +
-      '  - markdown: DingTalk markdown (limited support, no tables)'
+      '  - markdown: DingTalk markdown (limited support, no tables)\n' +
+      '  - richtext: Alias for markdown (deprecated, use markdown instead)'
     ),
 
   // 高级配置（可选）
