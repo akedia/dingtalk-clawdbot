@@ -31,3 +31,6 @@ npm-debug.log*
 # Cache
 .cache/
 *.tsbuildinfo
+
+# Local development notes (do not commit)
+.claude/
