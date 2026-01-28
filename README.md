@@ -24,7 +24,7 @@
 
 ## 快速开始
 
-> **从 v0.1.0 升级？** 查看 [🚀 快速升级指南](./QUICK-UPGRADE.md) - 一键升级脚本，不到 1 分钟完成！
+> **从 v0.1.0 升级？** 查看 [升级指南](./UPGRADE.md)
 
 ### 方式一：官方安装（推荐）
 
@@ -83,7 +83,7 @@ clawdbot plugins install .
         "allowFrom": ["YOUR_STAFF_ID"]
       },
       "groupPolicy": "allowlist",
-      "groupAllowlist": ["cidlnNrtqQ4kGskU56Qni6zTg=="],
+      "groupAllowlist": ["YOUR_CONVERSATION_ID"],
       "requireMention": true
     }
   }
@@ -149,7 +149,7 @@ tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log | grep dingtalk
 
 1. 在钉钉中找到机器人
 2. 发送任意消息
-3. 机器人会回复："Access denied. Your staffId: 050914185922786044 Ask admin to add you."
+3. 机器人会回复："Access denied. Your staffId: XXXXXXXXXXXXXXXXXXXX Ask admin to add you."
 4. 将这个 staffId 添加到配置文件的 `dm.allowFrom` 数组中
 5. 重启 gateway
 
@@ -170,7 +170,7 @@ tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log | grep "dingtalk.*Group"
 1. 临时修改配置为 `groupPolicy: "open"`
 2. 重启 gateway
 3. 在群聊中 @机器人发送消息
-4. 查看日志获取 conversationId（格式类似 `cidlnNrtqQ4kGskU56Qni6zTg==`）
+4. 查看日志获取 conversationId（格式类似 `cidXXXXXXXXXXXXXXXXXX==`）
 5. 将 conversationId 添加到 `groupAllowlist` 数组
 6. 改回 `groupPolicy: "allowlist"` 并重启
 
@@ -179,8 +179,8 @@ tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log | grep "dingtalk.*Group"
 {
   "groupPolicy": "allowlist",
   "groupAllowlist": [
-    "cidlnNrtqQ4kGskU56Qni6zTg==",
-    "anotherConversationId123=="
+    "cidXXXXXXXXXXXXXXXXXX==",
+    "cidYYYYYYYYYYYYYYYYYY=="
   ],
   "requireMention": true
 }

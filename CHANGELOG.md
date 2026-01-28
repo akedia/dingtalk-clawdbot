@@ -69,15 +69,12 @@ This release transforms the DingTalk plugin into an official Clawdbot plugin tha
 
 ### Migration Guide
 
-If you're upgrading from v0.1.0:
+If you're upgrading from v0.1.0, see [UPGRADE.md](./UPGRADE.md) for detailed steps.
 
+Summary:
 1. **No configuration changes required** - existing configs work as-is
-2. **Optional**: Try the new onboarding wizard for fresh setup
-3. **Optional**: Reinstall via NPM for easier updates:
-   ```bash
-   clawdbot plugins uninstall dingtalk
-   clawdbot plugins install @yaoyuanchao/dingtalk
-   ```
+2. Backup, stop gateway, delete old plugin, install via NPM, restart
+3. **Optional**: Try the new onboarding wizard for fresh setup
 
 ## [0.1.0] - 2026-01-26
 
