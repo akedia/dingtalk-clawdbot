@@ -53,8 +53,9 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
 
   client.registerCallbackListener(TOPIC_ROBOT, async (downstream: any) => {
     // Immediately ACK to prevent DingTalk from retrying (60s timeout)
+    // SDK method is socketCallBackResponse, not socketResponse
     try {
-      client.socketResponse(downstream.headers.messageId, { status: 'SUCCESS' });
+      client.socketCallBackResponse(downstream.headers.messageId, { status: 'SUCCESS' });
     } catch (_) { /* best-effort ACK */ }
 
     try {
@@ -318,11 +319,16 @@ async function processInboundMessage(
   // Extract message content using structured extractor
   const extracted = await extractMessageContent(msg, account, log);
 
-  // Download media if present (picture/audio/video/file)
+  // Download media if present (picture/video/file — but skip audio when ASR text exists)
   let mediaPath: string | undefined;
   let mediaType: string | undefined;
 
-  if (extracted.mediaDownloadCode && account.clientId && account.clientSecret) {
+  // For audio messages with successful ASR recognition, use the text directly
+  // and skip downloading the .amr file (which would confuse the agent into
+  // trying Whisper instead of reading the already-transcribed text).
+  const skipMediaDownload = extracted.messageType === 'audio' && !!extracted.text;
+
+  if (!skipMediaDownload && extracted.mediaDownloadCode && account.clientId && account.clientSecret) {
     const robotCode = account.robotCode || account.clientId;
     try {
       const result = await downloadMediaFile(
@@ -342,6 +348,8 @@ async function processInboundMessage(
     } catch (err) {
       log?.warn?.(`[dingtalk] Media download error: ${err}`);
     }
+  } else if (skipMediaDownload) {
+    log?.info?.("[dingtalk] Audio ASR text available, skipping .amr download");
   }
 
   let rawBody = extracted.text;

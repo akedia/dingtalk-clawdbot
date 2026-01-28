@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.6] - 2026-01-28
+
+### Fixed
+
+- **Stream ACK method name** — corrected `socketResponse()` to `socketCallBackResponse()` (the actual SDK method); previous typo caused ACK to silently fail, triggering DingTalk 60-second retry
+- **Audio message handling** — skip .amr file download when DingTalk ASR recognition text is available; prevents agent from being confused by audio attachment and trying Whisper instead of reading the already-transcribed text
+
 ## [1.3.5] - 2026-01-28
 
 ### Fixed
