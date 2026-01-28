@@ -9,8 +9,8 @@ export const groupPolicySchema = z.enum(['disabled', 'allowlist', 'open'], {
   description: 'Group chat access control policy',
 });
 
-export const messageFormatSchema = z.enum(['text', 'markdown', 'richtext'], {
-  description: 'Message format for bot responses (richtext is an alias for markdown)',
+export const messageFormatSchema = z.enum(['text', 'markdown', 'richtext', 'auto'], {
+  description: 'Message format for bot responses (richtext is an alias for markdown, auto detects markdown features)',
 });
 
 // DingTalk 配置 Schema
@@ -60,8 +60,13 @@ export const dingTalkConfigSchema = z.object({
       'Message format:\n' +
       '  - text: Plain text (recommended, supports tables)\n' +
       '  - markdown: DingTalk markdown (limited support, no tables)\n' +
-      '  - richtext: Alias for markdown (deprecated, use markdown instead)'
+      '  - richtext: Alias for markdown (deprecated, use markdown instead)\n' +
+      '  - auto: Auto-detect markdown features in response'
     ),
+
+  // 思考反馈
+  showThinking: z.boolean().default(false)
+    .describe('Send "正在思考..." feedback before AI responds'),
 
   // 高级配置（可选）
   textChunkLimit: z.number().int().positive().default(2000).optional()

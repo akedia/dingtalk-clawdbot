@@ -7,8 +7,8 @@ import os from "node:os";
 const DINGTALK_API_BASE = "https://api.dingtalk.com/v1.0";
 const DINGTALK_OAPI_BASE = "https://oapi.dingtalk.com";
 
-/** Temp directory for downloaded pictures */
-const TEMP_DIR = path.join(os.tmpdir(), "dingtalk-pictures");
+/** Temp directory for downloaded media files */
+const TEMP_DIR = path.join(os.tmpdir(), "dingtalk-media");
 
 /** Cache access tokens per clientId */
 const tokenCache = new Map<string, { token: string; expiresAt: number }>();
@@ -359,8 +359,78 @@ export async function downloadPicture(
   }
 }
 
-/** Clean up old picture files (older than 1 hour) */
-export function cleanupOldPictures(): void {
+/** Extension mapping for media types */
+const MEDIA_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'audio/amr': '.amr',
+  'audio/mpeg': '.mp3',
+  'audio/mp4': '.m4a',
+  'video/mp4': '.mp4',
+  'application/pdf': '.pdf',
+  'application/octet-stream': '.bin',
+};
+
+/** Download media file (picture/audio/video/file) from DingTalk */
+export async function downloadMediaFile(
+  clientId: string,
+  clientSecret: string,
+  robotCode: string,
+  downloadCode: string,
+  mediaType?: string,
+): Promise<{ filePath?: string; mimeType?: string; error?: string }> {
+  try {
+    const token = await getDingTalkAccessToken(clientId, clientSecret);
+
+    const url = `${DINGTALK_API_BASE}/robot/messageFiles/download`;
+    const headers = { "x-acs-dingtalk-access-token": token };
+    const body = { downloadCode, robotCode };
+
+    const response = await jsonPost(url, body, headers);
+
+    if (response.errcode && response.errcode !== 0) {
+      console.warn(`[dingtalk] Media download failed: ${response.errmsg}`);
+      return { error: response.errmsg || "Download failed" };
+    }
+
+    if (response.downloadUrl) {
+      const mediaBuffer = await httpGetBuffer(response.downloadUrl);
+
+      if (!fs.existsSync(TEMP_DIR)) {
+        fs.mkdirSync(TEMP_DIR, { recursive: true });
+      }
+
+      // Determine file extension from content type or media type hint
+      const contentType = response.contentType || '';
+      const ext = MEDIA_EXTENSIONS[contentType]
+        || (mediaType === 'audio' ? '.amr' : undefined)
+        || (mediaType === 'video' ? '.mp4' : undefined)
+        || (mediaType === 'image' ? '.jpg' : undefined)
+        || '.bin';
+
+      const timestamp = Date.now();
+      const prefix = mediaType || 'media';
+      const filename = `${prefix}_${timestamp}${ext}`;
+      const filePath = path.join(TEMP_DIR, filename);
+
+      fs.writeFileSync(filePath, mediaBuffer);
+
+      console.log(`[dingtalk] Media downloaded: ${filePath} (${mediaBuffer.length} bytes, type=${contentType || mediaType || 'unknown'})`);
+
+      return { filePath, mimeType: contentType || undefined };
+    }
+
+    return { error: "No download URL in response" };
+  } catch (err) {
+    console.warn(`[dingtalk] Error downloading media:`, err);
+    return { error: String(err) };
+  }
+}
+
+/** Clean up old media files (older than 1 hour) */
+export function cleanupOldMedia(): void {
   try {
     if (!fs.existsSync(TEMP_DIR)) return;
 
@@ -373,10 +443,13 @@ export function cleanupOldPictures(): void {
 
       if (stats.mtimeMs < oneHourAgo) {
         fs.unlinkSync(filePath);
-        console.log(`[dingtalk] Cleaned up old picture: ${filePath}`);
+        console.log(`[dingtalk] Cleaned up old media: ${filePath}`);
       }
     }
   } catch (err) {
-    console.warn(`[dingtalk] Error cleaning up pictures:`, err);
+    console.warn(`[dingtalk] Error cleaning up media:`, err);
   }
 }
+
+/** @deprecated Use cleanupOldMedia() instead */
+export const cleanupOldPictures = cleanupOldMedia;

@@ -97,9 +97,15 @@ export const dingtalkPlugin = {
         messageFormat: {
           type: 'string',
           title: 'Message Format',
-          enum: ['text', 'markdown'],
+          enum: ['text', 'markdown', 'auto'],
           default: 'text',
-          description: 'text=plain text, markdown=DingTalk markdown (limited: no tables, use text for tables)',
+          description: 'text=plain text, markdown=always markdown, auto=detect markdown features in response',
+        },
+        showThinking: {
+          type: 'boolean',
+          title: 'Show Thinking Indicator',
+          default: false,
+          description: 'Send "正在思考..." feedback before AI processing begins',
         },
       },
       required: ['clientId', 'clientSecret'],
@@ -234,6 +240,16 @@ export const dingtalkPlugin = {
       const cfg = runtime.config;
 
       log.info?.('[dingtalk] Starting Stream connection...');
+
+      // Record start activity
+      (runtime as any).channel?.activity?.record?.('dingtalk', account.accountId, 'start');
+
+      // Record stop activity on abort
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          (runtime as any).channel?.activity?.record?.('dingtalk', account.accountId, 'stop');
+        }, { once: true });
+      }
 
       try {
         await startDingTalkMonitor({

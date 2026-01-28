@@ -1,5 +1,5 @@
-import type { DingTalkRobotMessage, ResolvedDingTalkAccount } from "./types.js";
-import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, cleanupOldPictures } from "./api.js";
+import type { DingTalkRobotMessage, ResolvedDingTalkAccount, ExtractedMessage } from "./types.js";
+import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia } from "./api.js";
 import { getDingTalkRuntime } from "./runtime.js";
 
 export interface DingTalkMonitorContext {
@@ -18,11 +18,11 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   }
 
   // Clean up old pictures on startup
-  cleanupOldPictures();
+  cleanupOldMedia();
 
   // Schedule periodic cleanup every hour
   const cleanupInterval = setInterval(() => {
-    cleanupOldPictures();
+    cleanupOldMedia();
   }, 60 * 60 * 1000); // 1 hour
 
   // Clean up on abort (only if abortSignal is provided)
@@ -80,6 +80,212 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   setStatus?.({ running: true, lastStartAt: Date.now() });
 }
 
+/**
+ * Extract message content from DingTalk message into a structured format.
+ * Handles: text, richText, picture, audio, video, file.
+ */
+async function extractMessageContent(
+  msg: DingTalkRobotMessage,
+  account: ResolvedDingTalkAccount,
+  log?: any,
+): Promise<ExtractedMessage> {
+  const msgtype = msg.msgtype || 'text';
+  const content = msg.content;
+
+  switch (msgtype) {
+    case 'text': {
+      return {
+        text: msg.text?.content?.trim() ?? '',
+        messageType: 'text',
+      };
+    }
+
+    case 'richText': {
+      const result = await extractRichTextContent(msg, account, log);
+      return { ...result, messageType: 'richText' };
+    }
+
+    case 'picture': {
+      return extractPictureContent(msg, log);
+    }
+
+    case 'audio': {
+      // DingTalk provides speech recognition result in content.recognition
+      const recognition = content?.recognition;
+      const downloadCode = content?.downloadCode;
+      log?.info?.("[dingtalk] Audio message - recognition: " + (recognition || '(none)'));
+      return {
+        text: recognition || '[语音消息]',
+        mediaDownloadCode: downloadCode,
+        mediaType: 'audio',
+        messageType: 'audio',
+      };
+    }
+
+    case 'video': {
+      const downloadCode = content?.downloadCode;
+      log?.info?.("[dingtalk] Video message - downloadCode: " + (downloadCode || '(none)'));
+      return {
+        text: '[视频]',
+        mediaDownloadCode: downloadCode,
+        mediaType: 'video',
+        messageType: 'video',
+      };
+    }
+
+    case 'file': {
+      const downloadCode = content?.downloadCode;
+      const fileName = content?.fileName || '未知文件';
+      log?.info?.("[dingtalk] File message - fileName: " + fileName);
+      return {
+        text: `[文件: ${fileName}]`,
+        mediaDownloadCode: downloadCode,
+        mediaType: 'file',
+        mediaFileName: fileName,
+        messageType: 'file',
+      };
+    }
+
+    default: {
+      // Fallback: try text.content for unknown message types
+      const text = msg.text?.content?.trim() || '';
+      if (!text) {
+        log?.info?.("[dingtalk] Unknown msgtype: " + msgtype + ", no text content found");
+      }
+      return {
+        text: text || `[${msgtype}消息]`,
+        messageType: msgtype,
+      };
+    }
+  }
+}
+
+/**
+ * Extract content from richText messages.
+ * Preserves all existing edge-case handling for DingTalk's varied richText formats.
+ */
+async function extractRichTextContent(
+  msg: DingTalkRobotMessage,
+  account: ResolvedDingTalkAccount,
+  log?: any,
+): Promise<{ text: string; mediaDownloadCode?: string; mediaType?: 'image' }> {
+  // First try: msg.text.content (DingTalk sometimes also provides text for richText)
+  let text = msg.text?.content?.trim() ?? '';
+
+  // Second try: msg.richText as various formats
+  if (!text && msg.richText) {
+    try {
+      const richTextStr = typeof msg.richText === 'string'
+        ? msg.richText
+        : JSON.stringify(msg.richText);
+      log?.info?.("[dingtalk] Received richText message (full): " + richTextStr);
+
+      const rt = msg.richText as any;
+
+      if (typeof msg.richText === 'string') {
+        text = msg.richText.trim();
+      } else if (rt) {
+        text = rt.text?.trim()
+          || rt.content?.trim()
+          || rt.richText?.trim()
+          || '';
+
+        if (!text && Array.isArray(rt.richText)) {
+          const textParts: string[] = [];
+          for (const item of rt.richText) {
+            if (item.text) {
+              textParts.push(item.text);
+            } else if (item.content) {
+              textParts.push(item.content);
+            }
+          }
+          text = textParts.join('').trim();
+        }
+      }
+
+      if (text) {
+        log?.info?.("[dingtalk] Extracted from richText: " + text.slice(0, 100));
+      }
+    } catch (err) {
+      log?.info?.("[dingtalk] Failed to parse richText: " + err);
+    }
+  }
+
+  // Third try: msg.content.richText array (when msgtype === 'richText')
+  if (!text) {
+    const content = msg.content;
+    if (content?.richText && Array.isArray(content.richText)) {
+      log?.info?.("[dingtalk] RichText message - msg.content: " + JSON.stringify(content).substring(0, 200));
+      const parts: string[] = [];
+
+      for (const item of content.richText) {
+        if (item.msgType === "text" && item.content) {
+          parts.push(item.content);
+        } else if ((item.msgType === "picture" || item.pictureDownloadCode || item.downloadCode) && (item.downloadCode || item.pictureDownloadCode)) {
+          const downloadCode = item.downloadCode || item.pictureDownloadCode;
+          try {
+            const robotCode = account.robotCode || account.clientId;
+            const pictureResult = await downloadPicture(
+              account.clientId!, account.clientSecret!, robotCode!, downloadCode,
+            );
+            if (pictureResult.filePath) {
+              parts.push(`[图片: ${pictureResult.filePath}]`);
+              log?.info?.("[dingtalk] Downloaded picture from richText: " + pictureResult.filePath);
+            } else if (pictureResult.error) {
+              parts.push(`[图片下载失败: ${pictureResult.error}]`);
+            } else {
+              parts.push("[图片]");
+            }
+          } catch (err) {
+            parts.push(`[图片下载出错: ${err}]`);
+            log?.warn?.("[dingtalk] Error downloading picture from richText: " + err);
+          }
+        }
+      }
+
+      text = parts.join('');
+      if (text) {
+        log?.info?.("[dingtalk] Extracted from msg.content.richText: " + text.substring(0, 100));
+      }
+    }
+  }
+
+  return { text };
+}
+
+/**
+ * Extract content from picture messages, returning the download code for media pipeline.
+ */
+function extractPictureContent(msg: DingTalkRobotMessage, log?: any): ExtractedMessage {
+  log?.info?.("[dingtalk] Picture message - msg.picture: " + JSON.stringify(msg.picture));
+  log?.info?.("[dingtalk] Picture message - msg.content: " + JSON.stringify(msg.content));
+
+  const content = msg.content;
+  let downloadCode: string | undefined;
+
+  if (msg.picture?.downloadCode) {
+    downloadCode = msg.picture.downloadCode;
+  } else if (content?.downloadCode) {
+    downloadCode = content.downloadCode;
+  }
+
+  if (downloadCode) {
+    log?.info?.("[dingtalk] Picture detected, downloadCode: " + downloadCode);
+    return {
+      text: '[用户发送了图片]',
+      mediaDownloadCode: downloadCode,
+      mediaType: 'image',
+      messageType: 'picture',
+    };
+  }
+
+  log?.info?.("[dingtalk] Picture msgtype but no downloadCode found");
+  return {
+    text: '[用户发送了图片(无法获取下载码)]',
+    messageType: 'picture',
+  };
+}
+
 async function processInboundMessage(
   msg: DingTalkRobotMessage,
   ctx: DingTalkMonitorContext,
@@ -101,160 +307,45 @@ async function processInboundMessage(
     log?.info?.("[dingtalk-debug]   RAW MESSAGE: " + JSON.stringify(msg).substring(0, 500));
   }
 
-  // Extract message content from text or richText
-  let rawBody = msg.text?.content?.trim() ?? "";
+  // Extract message content using structured extractor
+  const extracted = await extractMessageContent(msg, account, log);
 
-  // If text is empty, try to extract from richText
-  if (!rawBody && msg.richText) {
+  // Download media if present (picture/audio/video/file)
+  let mediaPath: string | undefined;
+  let mediaType: string | undefined;
+
+  if (extracted.mediaDownloadCode && account.clientId && account.clientSecret) {
+    const robotCode = account.robotCode || account.clientId;
     try {
-      const richTextStr = typeof msg.richText === 'string'
-        ? msg.richText
-        : JSON.stringify(msg.richText);
-      log?.info?.("[dingtalk] Received richText message (full): " + richTextStr);
-
-      const rt = msg.richText as any;
-
-      // Try multiple possible fields for text content
-      if (typeof msg.richText === 'string') {
-        // If it's a string, use it directly
-        rawBody = msg.richText.trim();
-      } else if (rt) {
-        // Try various possible field names
-        rawBody = rt.text?.trim()
-          || rt.content?.trim()
-          || rt.richText?.trim()
-          || "";
-
-        // If still empty, try to extract from richText array structure
-        if (!rawBody && Array.isArray(rt.richText)) {
-          const textParts: string[] = [];
-          for (const item of rt.richText) {
-            // Handle different types of richText elements
-            if (item.text) {
-              textParts.push(item.text);
-            } else if (item.content) {
-              textParts.push(item.content);
-            }
-            // Note: @mention text should be included in item.text by DingTalk
-          }
-          rawBody = textParts.join('').trim();
-        }
-      }
-
-      if (rawBody) {
-        log?.info?.("[dingtalk] Extracted from richText: " + rawBody.slice(0, 100));
+      const result = await downloadMediaFile(
+        account.clientId,
+        account.clientSecret,
+        robotCode,
+        extracted.mediaDownloadCode,
+        extracted.mediaType,
+      );
+      if (result.filePath) {
+        mediaPath = result.filePath;
+        mediaType = result.mimeType || extracted.mediaType;
+        log?.info?.(`[dingtalk] Downloaded ${extracted.mediaType || 'media'}: ${result.filePath}`);
+      } else if (result.error) {
+        log?.warn?.(`[dingtalk] Media download failed: ${result.error}`);
       }
     } catch (err) {
-      log?.info?.("[dingtalk] Failed to parse richText: " + err);
+      log?.warn?.(`[dingtalk] Media download error: ${err}`);
     }
   }
 
-  // Additional fallback: try to get content from text.content even for richText messages
-  if (!rawBody && msg.text?.content) {
-    rawBody = msg.text.content.trim();
-    log?.info?.("[dingtalk] Using text.content as fallback: " + rawBody.slice(0, 100));
-  }
+  let rawBody = extracted.text;
 
-  // Handle richText messages (when msgtype === 'richText', data is in msg.content.richText)
-  if (!rawBody && msg.msgtype === 'richText') {
-    const content = (msg as any).content;
-    log?.info?.("[dingtalk] RichText message - msg.content: " + JSON.stringify(content).substring(0, 200));
-
-    if (content?.richText && Array.isArray(content.richText)) {
-      const parts: string[] = [];
-
-      for (const item of content.richText) {
-        if (item.msgType === "text" && item.content) {
-          parts.push(item.content);
-        } else if ((item.msgType === "picture" || item.pictureDownloadCode || item.downloadCode) && (item.downloadCode || item.pictureDownloadCode)) {
-          // Handle picture: msgType may be absent, check for downloadCode fields
-          const downloadCode = item.downloadCode || item.pictureDownloadCode;
-          // Download the picture from richText message
-          try {
-            const robotCode = account.robotCode || account.clientId;
-            const pictureResult = await downloadPicture(
-              account.clientId,
-              account.clientSecret,
-              robotCode,
-              downloadCode,
-            );
-
-            if (pictureResult.filePath) {
-              parts.push(`[图片: ${pictureResult.filePath}]`);
-              log?.info?.("[dingtalk] Downloaded picture from richText: " + pictureResult.filePath);
-            } else if (pictureResult.error) {
-              parts.push(`[图片下载失败: ${pictureResult.error}]`);
-            } else {
-              parts.push("[图片]");
-            }
-          } catch (err) {
-            parts.push(`[图片下载出错: ${err}]`);
-            log?.warn?.("[dingtalk] Error downloading picture from richText: " + err);
-          }
-        }
-      }
-
-      rawBody = parts.join("");
-      if (rawBody) {
-        log?.info?.("[dingtalk] Extracted from msg.content.richText: " + rawBody.substring(0, 100));
-      }
-    }
-  }
-
-  // Handle picture messages
-  if (!rawBody && msg.msgtype === 'picture') {
-    log?.info?.("[dingtalk] Picture message - msg.picture: " + JSON.stringify(msg.picture));
-    log?.info?.("[dingtalk] Picture message - msg.content: " + JSON.stringify((msg as any).content));
-    log?.info?.("[dingtalk] Full msg keys: " + Object.keys(msg).join(', '));
-
-    const content = (msg as any).content;
-    let downloadCode: string | undefined;
-
-    if (msg.picture?.downloadCode) {
-      downloadCode = msg.picture.downloadCode;
-    } else if (content?.downloadCode) {
-      downloadCode = content.downloadCode;
-    }
-
-    if (downloadCode) {
-      log?.info?.("[dingtalk] Picture detected, downloadCode: " + downloadCode);
-
-      // Try to download the picture
-      try {
-        const robotCode = account.robotCode || account.clientId;
-        const pictureResult = await downloadPicture(
-          account.clientId,
-          account.clientSecret,
-          robotCode,
-          downloadCode,
-        );
-
-        if (pictureResult.error) {
-          rawBody = `[用户发送了图片，但下载失败: ${pictureResult.error}]`;
-          log?.warn?.("[dingtalk] Picture download failed: " + pictureResult.error);
-        } else if (pictureResult.filePath) {
-          rawBody = `[用户发送了图片]\n图片已保存到: ${pictureResult.filePath}`;
-          log?.info?.("[dingtalk] Picture downloaded successfully: " + pictureResult.filePath);
-
-          // Note: If Agent supports multimodal input, we could pass the base64 or file path
-          // For now, we just notify the agent that a picture was sent
-        } else {
-          rawBody = "[用户发送了图片，但无法获取下载链接]";
-        }
-      } catch (err) {
-        rawBody = `[用户发送了图片，下载时出错: ${err}]`;
-        log?.warn?.("[dingtalk] Error downloading picture: " + err);
-      }
-    } else {
-      // Even if we can't get picture info, allow the message through
-      rawBody = "[用户发送了图片(无法获取下载码)]";
-      log?.info?.("[dingtalk] Picture msgtype but no downloadCode found");
-    }
-  }
-
-  if (!rawBody) {
-    log?.info?.("[dingtalk] Empty message body after all attempts, skipping. msgtype=" + msg.msgtype + ", hasText=" + !!msg.text + ", hasRichText=" + !!msg.richText + ", hasPicture=" + !!msg.picture);
+  if (!rawBody && !mediaPath) {
+    log?.info?.("[dingtalk] Empty message body after all attempts, skipping. msgtype=" + msg.msgtype);
     return;
+  }
+
+  // If we have media but no text, provide a placeholder
+  if (!rawBody && mediaPath) {
+    rawBody = `[${extracted.messageType}] 媒体文件已下载: ${mediaPath}`;
   }
 
   // Handle quoted/replied messages: extract the quoted content and prepend it
@@ -416,19 +507,44 @@ async function processInboundMessage(
     account,
   };
 
+  // Send thinking feedback (opt-in)
+  if (account.config.showThinking && msg.sessionWebhook) {
+    try {
+      await sendViaSessionWebhook(msg.sessionWebhook, '正在思考...');
+      log?.info?.('[dingtalk] Sent thinking indicator');
+    } catch (_) {
+      // fire-and-forget, don't block processing
+    }
+  }
+
   // Load actual config if cfg is a config manager
   let actualCfg = cfg;
   if (cfg && typeof cfg.loadConfig === "function") {
     try {
       actualCfg = await cfg.loadConfig();
-      console.warn("[dingtalk-debug] Loaded actual config, agents.defaults.model:", JSON.stringify(actualCfg?.agents?.defaults?.model, null, 2));
     } catch (err) {
-      console.warn("[dingtalk-debug] Failed to load config:", err);
+      log?.info?.("[dingtalk] Failed to load config: " + err);
     }
   }
 
+  // Check if the full Clawdbot Plugin SDK pipeline is available
+  const hasFullPipeline = !!(
+    runtime?.channel?.routing?.resolveAgentRoute &&
+    runtime?.channel?.reply?.finalizeInboundContext &&
+    runtime?.channel?.reply?.createReplyDispatcherWithTyping &&
+    runtime?.channel?.reply?.dispatchReplyFromConfig
+  );
+
   try {
-    if (runtime?.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
+    if (hasFullPipeline) {
+      // Full SDK pipeline: route → session → envelope → dispatch
+      await dispatchWithFullPipeline({
+        runtime, msg, rawBody, account, cfg: actualCfg, sessionKey, isDm,
+        senderId, senderName, conversationId, replyTarget,
+        mediaPath, mediaType, log, setStatus,
+      });
+    } else if (runtime?.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
+      // Fallback: existing buffered block dispatcher
       const ctxPayload = {
         Body: rawBody,
         RawBody: rawBody,
@@ -447,6 +563,9 @@ async function processInboundMessage(
         MessageSid: msg.msgId,
         OriginatingChannel: "dingtalk",
         OriginatingTo: "dingtalk:" + conversationId,
+        MediaPath: mediaPath,
+        MediaType: mediaType,
+        MediaUrl: mediaPath,
       };
 
       // Fire-and-forget: don't await to avoid blocking SDK callback during long agent runs
@@ -467,6 +586,9 @@ async function processInboundMessage(
       }).catch((err) => {
         log?.info?.("[dingtalk] Dispatch failed: " + err);
       });
+
+      // Record activity
+      runtime.channel?.activity?.record?.('dingtalk', account.accountId, 'message');
     } else {
       log?.info?.("[dingtalk] Runtime dispatch not available");
     }
@@ -475,12 +597,122 @@ async function processInboundMessage(
   }
 }
 
+/**
+ * Dispatch using the full Clawdbot Plugin SDK pipeline.
+ * Uses resolveAgentRoute → session → envelope → finalizeContext → dispatch.
+ */
+async function dispatchWithFullPipeline(params: {
+  runtime: any;
+  msg: DingTalkRobotMessage;
+  rawBody: string;
+  account: ResolvedDingTalkAccount;
+  cfg: any;
+  sessionKey: string;
+  isDm: boolean;
+  senderId: string;
+  senderName: string;
+  conversationId: string;
+  replyTarget: any;
+  mediaPath?: string;
+  mediaType?: string;
+  log?: any;
+  setStatus?: (update: Record<string, unknown>) => void;
+}): Promise<void> {
+  const { runtime: rt, msg, rawBody, account, cfg, isDm,
+          senderId, senderName, conversationId, replyTarget,
+          log, setStatus } = params;
+
+  // 1. Resolve agent route
+  const route = rt.channel.routing.resolveAgentRoute({
+    cfg,
+    channel: 'dingtalk',
+    accountId: account.accountId,
+    peer: { kind: isDm ? 'dm' : 'group', id: isDm ? senderId : conversationId },
+  });
+
+  // 2. Resolve store path
+  const storePath = rt.channel.session?.resolveStorePath?.(cfg?.session?.store, { agentId: route.agentId });
+
+  // 3. Get envelope format options
+  const envelopeOptions = rt.channel.reply?.resolveEnvelopeFormatOptions?.(cfg) ?? {};
+
+  // 4. Read previous timestamp for session continuity
+  const previousTimestamp = rt.channel.session?.readSessionUpdatedAt?.({ storePath, sessionKey: route.sessionKey });
+
+  // 5. Format inbound envelope
+  const fromLabel = isDm ? `${senderName} (${senderId})` : `${msg.conversationTitle || conversationId} - ${senderName}`;
+  const body = rt.channel.reply.formatInboundEnvelope?.({
+    channel: 'DingTalk', from: fromLabel, timestamp: msg.createAt, body: rawBody,
+    chatType: isDm ? 'direct' : 'group', sender: { name: senderName, id: senderId },
+    previousTimestamp, envelope: envelopeOptions,
+  }) ?? rawBody;
+
+  // 6. Finalize inbound context (includes media info)
+  const to = isDm ? `dingtalk:${senderId}` : `dingtalk:group:${conversationId}`;
+  const ctx = rt.channel.reply.finalizeInboundContext({
+    Body: body, RawBody: rawBody, CommandBody: rawBody, From: to, To: to,
+    SessionKey: route.sessionKey, AccountId: account.accountId,
+    ChatType: isDm ? 'direct' : 'group',
+    ConversationLabel: fromLabel,
+    GroupSubject: isDm ? undefined : (msg.conversationTitle || conversationId),
+    SenderName: senderName, SenderId: senderId,
+    Provider: 'dingtalk', Surface: 'dingtalk',
+    MessageSid: msg.msgId, Timestamp: msg.createAt,
+    MediaPath: params.mediaPath, MediaType: params.mediaType, MediaUrl: params.mediaPath,
+    CommandAuthorized: true,
+    OriginatingChannel: 'dingtalk', OriginatingTo: to,
+  });
+
+  // 7. Record inbound session
+  if (rt.channel.session?.recordInboundSession) {
+    await rt.channel.session.recordInboundSession({
+      storePath, sessionKey: ctx.SessionKey || route.sessionKey, ctx,
+      updateLastRoute: isDm ? { sessionKey: route.mainSessionKey, channel: 'dingtalk', to: senderId, accountId: account.accountId } : undefined,
+    });
+  }
+
+  // 8. Create typing-aware dispatcher
+  const { dispatcher, replyOptions, markDispatchIdle } = rt.channel.reply.createReplyDispatcherWithTyping({
+    responsePrefix: '',
+    deliver: async (payload: any) => {
+      try {
+        const textToSend = payload.markdown || payload.text;
+        if (!textToSend) return { ok: true };
+        await deliverReply(replyTarget, textToSend, log);
+        setStatus?.({ lastOutboundAt: Date.now() });
+        return { ok: true };
+      } catch (err: any) {
+        log?.info?.("[dingtalk] Reply delivery failed: " + err.message);
+        return { ok: false, error: err.message };
+      }
+    },
+  });
+
+  // 9. Dispatch reply from config
+  try {
+    await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
+  } finally {
+    markDispatchIdle();
+  }
+
+  // 10. Record activity
+  rt.channel?.activity?.record?.('dingtalk', account.accountId, 'message');
+}
+
 async function deliverReply(target: any, text: string, log?: any): Promise<void> {
   const now = Date.now();
   const chunkLimit = 2000;
   const messageFormat = target.account.config.messageFormat ?? "text";
-  // Support both "markdown" and "richtext" (they're equivalent for DingTalk)
-  const isMarkdown = messageFormat === "markdown" || messageFormat === "richtext";
+
+  // Determine if this message should use markdown format
+  let isMarkdown: boolean;
+  if (messageFormat === 'auto') {
+    isMarkdown = detectMarkdownContent(text);
+    log?.info?.("[dingtalk] Auto-detected format: " + (isMarkdown ? "markdown" : "text"));
+  } else {
+    // Support both "markdown" and "richtext" (they're equivalent for DingTalk)
+    isMarkdown = messageFormat === "markdown" || messageFormat === "richtext";
+  }
 
   // Convert markdown tables to text format (DingTalk doesn't support tables)
   let processedText = text;
@@ -601,6 +833,14 @@ function convertMarkdownTables(text: string): string {
     result += '```\n';
     return result;
   });
+}
+
+/**
+ * Detect if text contains markdown features worth rendering as markdown.
+ * Checks for headers, bold, code blocks, lists, blockquotes, links, and images.
+ */
+function detectMarkdownContent(text: string): boolean {
+  return /^#{1,6}\s|^\s*[-*+]\s|^\s*\d+\.\s|^\s*>|```|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\)|!\[[^\]]*\]\([^)]+\)/m.test(text);
 }
 
 function isSenderAllowed(senderId: string, allowFrom: string[]): boolean {
