@@ -132,8 +132,8 @@ cat .claude\CLAUDE.md
 
 ### 2️⃣ 查看远端状态
 ```bash
-ssh clawd@172.20.90.45 "clawdbot plugins list | grep dingtalk"
-ssh clawd@172.20.90.45 "ps aux | grep 'clawdbot gateway'"
+ssh root@172.20.90.45 "su - clawd -c 'clawdbot plugins list | grep dingtalk'"
+ssh root@172.20.90.45 "ps aux | grep 'clawdbot gateway'"
 ```
 
 ### 3️⃣ 本地开发
@@ -146,7 +146,7 @@ npm pack
 ### 4️⃣ 发布更新
 ```bash
 npm publish --access public
-ssh clawd@172.20.90.45 "clawdbot plugins update @yaoyuanchao/dingtalk"
+ssh root@172.20.90.45 "su - clawd -c 'clawdbot plugins update @yaoyuanchao/dingtalk'"
 ```
 
 ---

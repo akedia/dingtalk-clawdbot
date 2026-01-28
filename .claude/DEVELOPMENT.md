@@ -490,16 +490,16 @@ tail -f C:\Users\你的用户名\.clawdbot\logs\clawdbot-*.log
 
 ```bash
 # 查看详细日志
-ssh clawd@172.20.90.45 "tail -100 /tmp/clawdbot/clawdbot-\$(date +%Y-%m-%d).log"
+ssh root@172.20.90.45 "tail -100 /tmp/clawdbot/clawdbot-\$(date +%Y-%m-%d).log"
 
 # 实时监控
-ssh clawd@172.20.90.45 "tail -f /tmp/clawdbot/clawdbot-\$(date +%Y-%m-%d).log | grep dingtalk"
+ssh root@172.20.90.45 "tail -f /tmp/clawdbot/clawdbot-\$(date +%Y-%m-%d).log | grep dingtalk"
 
 # 检查进程
-ssh clawd@172.20.90.45 "ps aux | grep clawdbot"
+ssh root@172.20.90.45 "ps aux | grep clawdbot"
 
 # 检查配置
-ssh clawd@172.20.90.45 "cat ~/.clawdbot/clawdbot.json | jq '.channels.dingtalk'"
+ssh root@172.20.90.45 "cat /home/clawd/.clawdbot/clawdbot.json | jq '.channels.dingtalk'"
 ```
 
 ### 常见问题调试

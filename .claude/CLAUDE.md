@@ -31,9 +31,18 @@
 ```bash
 # 主要服务器（Clawdbot 生产环境）
 Host: 172.20.90.45
-User: clawd（开发）/ root（部署）
-SSH: ssh clawd@172.20.90.45
-     ssh root@172.20.90.45
+User: root（SSH 登录）
+Working User: clawd（插件运行用户）
+
+# SSH 登录（只能用 root）
+ssh root@172.20.90.45
+
+# 切换到 clawd 用户执行命令
+ssh root@172.20.90.45 "su - clawd -c '命令'"
+
+# 或先登录再切换
+ssh root@172.20.90.45
+su - clawd
 ```
 
 ### 重要目录路径
@@ -63,20 +72,23 @@ cat /home/clawd/.clawdbot/clawdbot.json | jq '.channels.dingtalk'
 
 ### 远端常用操作
 ```bash
-# 重启 Gateway
-ssh clawd@172.20.90.45 "pkill -f 'clawdbot gateway' && clawdbot gateway > /dev/null 2>&1 &"
+# 查看插件状态（作为 clawd 用户）
+ssh root@172.20.90.45 "su - clawd -c 'clawdbot plugins list'"
+
+# 查看 Gateway 进程
+ssh root@172.20.90.45 "ps aux | grep 'clawdbot gateway'"
 
 # 查看日志
-ssh clawd@172.20.90.45 "tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log | grep dingtalk"
-
-# 检查插件状态
-ssh clawd@172.20.90.45 "clawdbot plugins list"
+ssh root@172.20.90.45 "tail -f /tmp/clawdbot/clawdbot-\$(date +%Y-%m-%d).log | grep dingtalk"
 
 # 查看配置
-ssh clawd@172.20.90.45 "cat ~/.clawdbot/clawdbot.json | jq '.channels.dingtalk'"
+ssh root@172.20.90.45 "cat /home/clawd/.clawdbot/clawdbot.json | jq '.channels.dingtalk'"
 
 # 备份配置
-scp clawd@172.20.90.45:~/.clawdbot/clawdbot.json ./remote-config-backup-$(date +%Y%m%d).json
+scp root@172.20.90.45:/home/clawd/.clawdbot/clawdbot.json ./remote-config-backup-\$(date +%Y%m%d).json
+
+# 重启 Gateway（作为 clawd 用户）
+ssh root@172.20.90.45 "su - clawd -c 'pkill -f \"clawdbot gateway\" && nohup clawdbot gateway > /dev/null 2>&1 &'"
 ```
 
 ---
