@@ -207,4 +207,4 @@ echo -e "     ${BOLD}clawdbot onboard --channel dingtalk${NC}\n"
 
 echo "备份文件位置:"
 echo "  $BACKUP_FILE"
-echo -e "\n如有问题，请查看升级文档: https://github.com/yaoyuanchao/dingtalk-clawdbot/UPGRADE.md"
+echo -e "\n如有问题，请查看升级文档: https://github.com/akedia/dingtalk-clawdbot/UPGRADE.md"

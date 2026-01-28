@@ -351,7 +351,7 @@ A:
 
 1. 查看日志: `tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log`
 2. 运行诊断: `clawdbot doctor`
-3. 查看 GitHub Issues: https://github.com/yaoyuanchao/dingtalk-clawdbot/issues
+3. 查看 GitHub Issues: https://github.com/akedia/dingtalk-clawdbot/issues
 4. 阅读文档: [README.md](./README.md), [CHANGELOG.md](./CHANGELOG.md)
 
 ## 下次升级

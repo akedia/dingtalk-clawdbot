@@ -17,7 +17,7 @@ bash /tmp/upgrade-dingtalk.sh
 **或者**，如果你克隆了仓库：
 
 ```bash
-git clone https://github.com/yaoyuanchao/dingtalk-clawdbot.git
+git clone https://github.com/akedia/dingtalk-clawdbot.git
 cd dingtalk-clawdbot
 bash upgrade-from-v0.1.0.sh
 ```
@@ -114,7 +114,7 @@ A: **完全兼容**，v1.2.0 继续支持 richtext（作为 markdown 的别名�
 
 - 📖 详细升级文档: [UPGRADE.md](./UPGRADE.md)
 - 🔧 兼容性说明: [COMPATIBILITY.md](./COMPATIBILITY.md)
-- 🐛 问题反馈: [GitHub Issues](https://github.com/yaoyuanchao/dingtalk-clawdbot/issues)
+- 🐛 问题反馈: [GitHub Issues](https://github.com/akedia/dingtalk-clawdbot/issues)
 - 📝 完整文档: [README.md](./README.md)
 
 ---
