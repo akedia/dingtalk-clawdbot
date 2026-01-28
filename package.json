@@ -1,8 +1,17 @@
 {
-  "name": "@clawdbot/dingtalk",
-  "version": "0.1.0",
+  "name": "@yaoyuanchao/dingtalk",
+  "version": "1.2.0",
   "type": "module",
-  "description": "Clawdbot DingTalk channel plugin (Stream Mode)",
+  "description": "DingTalk channel plugin for Clawdbot with Stream Mode support",
+  "license": "MIT",
+  "author": "Yao Yuanchao",
+  "keywords": [
+    "clawdbot",
+    "dingtalk",
+    "channel-plugin",
+    "stream-mode",
+    "ai-assistant"
+  ],
   "clawdbot": {
     "extensions": [
       "./index.ts"
@@ -10,20 +19,37 @@
     "channel": {
       "id": "dingtalk",
       "label": "DingTalk",
-      "selectionLabel": "DingTalk (\u9489\u9489)",
-      "detailLabel": "DingTalk",
+      "selectionLabel": "DingTalk (钉钉)",
+      "detailLabel": "DingTalk Stream Mode",
       "docsPath": "/channels/dingtalk",
       "docsLabel": "dingtalk",
-      "blurb": "DingTalk bot via Stream Mode (WebSocket)",
+      "blurb": "DingTalk bot via Stream Mode (WebSocket) - No public domain required",
       "aliases": [
         "dingding",
         "dd"
       ],
       "order": 75,
       "quickstartAllowFrom": true
+    },
+    "install": {
+      "npmSpec": "@yaoyuanchao/dingtalk",
+      "localPath": ".",
+      "defaultChoice": "npm"
     }
   },
   "dependencies": {
-    "dingtalk-stream": "^2.1.4"
-  }
+    "dingtalk-stream": "^2.1.4",
+    "zod": "^3.22.0"
+  },
+  "peerDependencies": {
+    "clawdbot": ">=2026.1.24"
+  },
+  "files": [
+    "index.ts",
+    "src/**/*.ts",
+    "clawdbot.plugin.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ]
 }

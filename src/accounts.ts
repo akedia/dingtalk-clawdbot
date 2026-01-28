@@ -1,4 +1,5 @@
 import type { ResolvedDingTalkAccount, DingTalkChannelConfig } from "./types.js";
+import { validateDingTalkConfig, type DingTalkConfig } from "./config-schema.js";
 
 const DEFAULT_ACCOUNT_ID = "default";
 const ENV_CLIENT_ID = "DINGTALK_CLIENT_ID";
@@ -20,36 +21,53 @@ export function resolveDingTalkAccount(params: {
   accountId?: string | null;
 }): ResolvedDingTalkAccount {
   const accountId = params.accountId?.trim() || DEFAULT_ACCOUNT_ID;
-  const channel = (params.cfg?.channels?.dingtalk ?? {}) as DingTalkChannelConfig;
+  const rawConfig = params.cfg?.channels?.dingtalk ?? {};
 
-  let clientId = channel.clientId?.trim();
-  let clientSecret = channel.clientSecret?.trim();
-  let robotCode = channel.robotCode?.trim();
+  // Merge configuration with environment variables
+  // Environment variables serve as fallback for missing config values
+  const configWithEnv = {
+    ...rawConfig,
+    clientId: rawConfig.clientId || process.env[ENV_CLIENT_ID],
+    clientSecret: rawConfig.clientSecret || process.env[ENV_CLIENT_SECRET],
+    robotCode: rawConfig.robotCode || process.env[ENV_ROBOT_CODE],
+  };
+
+  // Validate configuration with Zod
+  let validatedConfig: DingTalkConfig;
   let credentialSource: "config" | "env" | "none" = "none";
 
-  if (clientId && clientSecret) {
-    credentialSource = "config";
-  } else {
-    clientId = clientId || process.env[ENV_CLIENT_ID]?.trim();
-    clientSecret = clientSecret || process.env[ENV_CLIENT_SECRET]?.trim();
-    robotCode = robotCode || process.env[ENV_ROBOT_CODE]?.trim();
-    if (clientId && clientSecret) {
+  try {
+    validatedConfig = validateDingTalkConfig(configWithEnv);
+
+    // Determine credential source
+    if (rawConfig.clientId && rawConfig.clientSecret) {
+      credentialSource = "config";
+    } else if (validatedConfig.clientId && validatedConfig.clientSecret) {
       credentialSource = "env";
     }
+  } catch (error) {
+    // If validation fails, throw a helpful error message
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `DingTalk configuration validation failed for account "${accountId}":\n${errorMsg}\n\n` +
+      `Please check your configuration at channels.dingtalk or set environment variables:\n` +
+      `  - ${ENV_CLIENT_ID}\n` +
+      `  - ${ENV_CLIENT_SECRET}\n` +
+      `  - ${ENV_ROBOT_CODE} (optional)`
+    );
   }
 
-  const enabled = channel.enabled !== false;
-  const configured = credentialSource !== "none";
+  const configured = !!(validatedConfig.clientId && validatedConfig.clientSecret);
 
   return {
     accountId,
     name: "DingTalk Bot",
-    enabled,
+    enabled: validatedConfig.enabled,
     configured,
-    clientId,
-    clientSecret,
-    robotCode: robotCode || clientId,
+    clientId: validatedConfig.clientId,
+    clientSecret: validatedConfig.clientSecret,
+    robotCode: validatedConfig.robotCode || validatedConfig.clientId,
     credentialSource,
-    config: channel as Record<string, any>,
+    config: validatedConfig as unknown as Record<string, any>,
   };
 }

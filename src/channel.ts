@@ -1,7 +1,8 @@
 import { getDingTalkRuntime } from './runtime.js';
 import { resolveDingTalkAccount } from './accounts.js';
 import { startDingTalkMonitor } from './monitor.js';
-import { probeDingTalk, sendDingTalkRestMessage } from './api.js';
+import { sendDingTalkRestMessage } from './api.js';
+import { probeDingTalk } from './probe.js';
 
 export const dingtalkPlugin = {
   id: 'dingtalk',
@@ -253,12 +254,18 @@ export const dingtalkPlugin = {
 
   status: {
     async probeAccount(account) {
-      try {
-        await probeDingTalk(account.clientId, account.clientSecret);
-        return { ok: true };
-      } catch (err) {
-        return { ok: false, error: String(err) };
+      if (!account.configured || !account.clientId || !account.clientSecret) {
+        return { ok: false, error: 'Not configured' };
       }
+
+      return await probeDingTalk(account.clientId, account.clientSecret);
+    },
+  },
+
+  onboarding: {
+    async run(ctx: any) {
+      const { onboardDingTalk } = await import('./onboarding.js');
+      return onboardDingTalk(ctx);
     },
   },
 };

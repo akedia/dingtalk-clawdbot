@@ -1,30 +1,9 @@
-# Clawdbot DingTalk Channel Plugin
+# DingTalk Channel Plugin for Clawdbot
 
-钉钉（DingTalk）频道插件，支持通过 Stream 模式接收和回复私聊及群聊消息。
+[![npm version](https://img.shields.io/npm/v/@yaoyuanchao/dingtalk.svg)](https://www.npmjs.com/package/@yaoyuanchao/dingtalk)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## ⚠️ 重要：分享此插件时的注意事项
-
-**只分享 `extensions/dingtalk/` 目录，不要分享以下敏感文件：**
-
-- ❌ `clawdbot.json` - 包含 API Key、DingTalk 凭证、staffId
-- ❌ `.env` 文件 - 环境变量配置
-- ❌ 任何包含真实凭证的文件
-
-**如果不小心分享了配置文件，可能导致：**
-1. 他人消耗你的 API 额度
-2. 多个实例连接同一个机器人，消息串台
-3. 隐私泄露和安全风险
-
-**正确的分享方式：**
-```bash
-# 只复制插件源代码目录
-cp -r extensions/dingtalk /path/to/share/
-
-# 确认不包含敏感文件
-ls /path/to/share/dingtalk/  # 应该只看到 src/, package.json, README.md 等
-```
-
-其他人拿到插件后，需要使用**自己的 DingTalk 应用凭证**配置。
+钉钉（DingTalk）频道插件，支持通过 Stream 模式接收和回复私聊及群聊消息。**无需公网域名，开箱即用！**
 
 ---
 
@@ -43,28 +22,50 @@ ls /path/to/share/dingtalk/  # 应该只看到 src/, package.json, README.md 等
 2. Node.js 环境（clawdbot 已安装）
 3. 应用的 AppKey (clientId) 和 AppSecret (clientSecret)
 
-## 安装步骤
+## 快速开始
 
-### 1. 复制插件文件
-
-将整个 `dingtalk` 目录复制到你的 clawdbot 扩展目录：
+### 方式一：官方安装（推荐）
 
 ```bash
-# Linux/Mac
-cp -r dingtalk ~/.clawdbot/extensions/
+# 安装插件
+clawdbot plugins install @yaoyuanchao/dingtalk
 
-# Windows
-xcopy /E /I dingtalk %USERPROFILE%\.clawdbot\extensions\dingtalk
+# 运行交互式配置向导
+clawdbot onboard --channel dingtalk
+
+# 启动网关
+clawdbot gateway
 ```
 
-### 2. 安装依赖
+就这么简单！配置向导会引导你完成所有设置。
+
+### 方式二：手动安装
+
+如果你想从源码安装或进行开发：
 
 ```bash
-cd ~/.clawdbot/extensions/dingtalk
+# 克隆或下载源码
+git clone https://github.com/yourusername/dingtalk-clawdbot.git
+
+# 本地安装
+cd dingtalk-clawdbot
 npm install
+clawdbot plugins install .
 ```
 
-### 3. 配置 clawdbot.json
+## 配置说明
+
+### 交互式配置（推荐）
+
+运行 `clawdbot onboard --channel dingtalk` 启动配置向导，它会：
+
+1. ✅ 要求输入 Client ID 和 Client Secret
+2. ✅ 自动测试连接
+3. ✅ 引导选择私聊策略（Pairing/Allowlist/Open/Disabled）
+4. ✅ 引导选择群聊策略（Allowlist/Open/Disabled）
+5. ✅ 自动保存配置到 `~/.clawdbot/clawdbot.json`
+
+### 手动配置 clawdbot.json
 
 编辑 `~/.clawdbot/clawdbot.json`，添加 DingTalk 频道配置：
 
@@ -272,6 +273,16 @@ clawdbot gateway restart
 
 ## 更新日志
 
+查看 [CHANGELOG.md](./CHANGELOG.md) 获取详细的版本历史。
+
+### v1.2.0 (2026-01-28) - 官方插件发布
+
+- ✅ **官方 NPM 安装支持** - `clawdbot plugins install @yaoyuanchao/dingtalk`
+- ✅ **交互式配置向导** - `clawdbot onboard --channel dingtalk`
+- ✅ **Zod 配置验证** - 类型安全、自动错误提示
+- ✅ **健康检查** - 自动探测连接状态和延迟
+- ✅ 保留所有 v0.1.0 功能
+
 ### v0.1.0 (2026-01-26)
 
 - ✅ 初始版本发布
@@ -280,11 +291,10 @@ clawdbot gateway restart
 - ✅ Pairing 访问控制
 - ✅ 群聊白名单（groupAllowlist）
 - ✅ Markdown 消息格式支持（自动转换表格为纯文本）
-- ✅ 修复配置管理器对象问题（cfg.loadConfig()）
 
 ## 许可证
 
-本插件为 Clawdbot 扩展，遵循 Clawdbot 项目的许可证。
+MIT License - 查看 [LICENSE](./LICENSE) 文件获取详细信息。
 
 ## 贡献
 
