@@ -168,6 +168,7 @@ async function extractMessageContent(
             senderNick?: string;
             msgType?: string;
             content?: string;
+            downloadCode?: string;  // For media messages (picture, video, file)
             createAt?: number;
           }>;
 
@@ -214,7 +215,35 @@ async function extractMessageContent(
               }
               sender = sender || '未知';
 
-              const msgContent = record.content || '[不支持的消息类型]';
+              // Handle different message types in chatRecord
+              let msgContent: string;
+              switch (record.msgType) {
+                case 'text':
+                  msgContent = record.content || '[空消息]';
+                  break;
+                case 'picture':
+                case 'image':
+                  msgContent = '[图片]';
+                  break;
+                case 'video':
+                  msgContent = '[视频]';
+                  break;
+                case 'file':
+                  msgContent = '[文件]';
+                  break;
+                case 'voice':
+                case 'audio':
+                  msgContent = '[语音]';
+                  break;
+                case 'richText':
+                  msgContent = record.content || '[富文本消息]';
+                  break;
+                case 'markdown':
+                  msgContent = record.content || '[Markdown消息]';
+                  break;
+                default:
+                  msgContent = record.content || `[${record.msgType || '未知'}消息]`;
+              }
               const time = record.createAt ? new Date(record.createAt).toLocaleString('zh-CN') : '';
               return `[${idx + 1}] ${sender}${time ? ` (${time})` : ''}: ${msgContent}`;
             });
