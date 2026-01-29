@@ -152,11 +152,99 @@ async function extractMessageContent(
       };
     }
 
+    case 'chatRecord': {
+      // Chat record collection - contains multiple forwarded messages
+      // Structure: content.chatRecord is a JSON string containing an array of messages
+      const chatRecordContent = content || (msg as any).chatRecord;
+      log?.info?.("[dingtalk] chatRecord message received");
+
+      try {
+        // chatRecord is a JSON string, need to parse it
+        const chatRecordStr = chatRecordContent?.chatRecord;
+        if (chatRecordStr && typeof chatRecordStr === 'string') {
+          const records = JSON.parse(chatRecordStr) as Array<{
+            senderId?: string;
+            senderStaffId?: string;  // Non-encrypted userId (available when app is published)
+            senderNick?: string;
+            msgType?: string;
+            content?: string;
+            createAt?: number;
+          }>;
+
+          if (Array.isArray(records) && records.length > 0) {
+            // Debug: log first record structure with all keys
+            const firstRecord = records[0];
+            log?.info?.("[dingtalk] chatRecord first record keys: " + Object.keys(firstRecord).join(', '));
+            log?.info?.("[dingtalk] chatRecord first record: " + JSON.stringify(firstRecord));
+
+            // Collect unique userIds for batch lookup
+            // Prefer senderStaffId (non-encrypted) over senderId
+            const senderIds = [...new Set(
+              records
+                .map(r => r.senderStaffId || (r.senderId && !r.senderId.startsWith('$:') ? r.senderId : null))
+                .filter((id): id is string => !!id)
+            )].slice(0, 10); // Limit to 10 users
+
+            log?.info?.("[dingtalk] chatRecord senderIds for lookup: " + JSON.stringify(senderIds));
+
+            // Try to resolve sender names via API
+            let senderNameMap = new Map<string, string>();
+            if (senderIds.length > 0 && account.clientId && account.clientSecret) {
+              try {
+                senderNameMap = await batchGetUserInfo(account.clientId, account.clientSecret, senderIds, 3000);
+                log?.info?.("[dingtalk] Resolved " + senderNameMap.size + " sender names from API");
+              } catch (err) {
+                log?.info?.("[dingtalk] Failed to resolve sender names: " + err);
+              }
+            }
+
+            const formattedRecords = records.map((record, idx) => {
+              // Try: senderNick > API resolved name (via staffId or senderId) > fallback
+              let sender = record.senderNick;
+              if (!sender) {
+                // Try to get name from API lookup
+                const lookupId = record.senderStaffId || record.senderId;
+                if (lookupId) {
+                  sender = senderNameMap.get(lookupId);
+                }
+                // Fallback for encrypted IDs
+                if (!sender && record.senderId?.startsWith('$:')) {
+                  sender = '成员';
+                }
+              }
+              sender = sender || '未知';
+
+              const msgContent = record.content || '[不支持的消息类型]';
+              const time = record.createAt ? new Date(record.createAt).toLocaleString('zh-CN') : '';
+              return `[${idx + 1}] ${sender}${time ? ` (${time})` : ''}: ${msgContent}`;
+            });
+            const text = `[聊天记录合集 - ${records.length}条消息]\n${formattedRecords.join('\n')}`;
+            log?.info?.("[dingtalk] Parsed chatRecord with " + records.length + " messages");
+            return {
+              text,
+              messageType: 'chatRecord',
+            };
+          }
+        }
+      } catch (e) {
+        log?.info?.("[dingtalk] Failed to parse chatRecord: " + (e instanceof Error ? e.message : String(e)));
+      }
+
+      // Fallback if structure is different or parsing failed
+      log?.info?.("[dingtalk] chatRecord structure not recognized, full msg: " + JSON.stringify(msg).slice(0, 500));
+      return {
+        text: '[聊天记录合集]',
+        messageType: 'chatRecord',
+      };
+    }
+
     default: {
       // Fallback: try text.content for unknown message types
       const text = msg.text?.content?.trim() || '';
       if (!text) {
         log?.info?.("[dingtalk] Unknown msgtype: " + msgtype + ", no text content found");
+        // Log full message structure for debugging unknown types
+        log?.info?.("[dingtalk] Unknown msgtype full structure: " + JSON.stringify(msg).slice(0, 1000));
       }
       return {
         text: text || `[${msgtype}消息]`,
