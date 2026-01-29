@@ -199,7 +199,8 @@ async function extractMessageContent(
               }
             }
 
-            const formattedRecords = records.map((record, idx) => {
+            // Process records with async image downloads
+            const formattedRecords = await Promise.all(records.map(async (record, idx) => {
               // Try: senderNick > API resolved name (via staffId or senderId) > fallback
               let sender = record.senderNick;
               if (!sender) {
@@ -223,7 +224,28 @@ async function extractMessageContent(
                   break;
                 case 'picture':
                 case 'image':
-                  msgContent = '[图片]';
+                  // Try to download the image
+                  if (record.downloadCode && account.clientId && account.clientSecret) {
+                    try {
+                      const robotCode = account.robotCode || account.clientId;
+                      const pictureResult = await downloadPicture(
+                        account.clientId, account.clientSecret, robotCode!, record.downloadCode,
+                      );
+                      if (pictureResult.filePath) {
+                        msgContent = `[图片: ${pictureResult.filePath}]`;
+                        log?.info?.("[dingtalk] Downloaded chatRecord picture: " + pictureResult.filePath);
+                      } else if (pictureResult.error) {
+                        msgContent = `[图片下载失败: ${pictureResult.error}]`;
+                      } else {
+                        msgContent = '[图片]';
+                      }
+                    } catch (err) {
+                      log?.info?.("[dingtalk] Error downloading chatRecord picture: " + err);
+                      msgContent = '[图片]';
+                    }
+                  } else {
+                    msgContent = '[图片]';
+                  }
                   break;
                 case 'video':
                   msgContent = '[视频]';
@@ -246,7 +268,7 @@ async function extractMessageContent(
               }
               const time = record.createAt ? new Date(record.createAt).toLocaleString('zh-CN') : '';
               return `[${idx + 1}] ${sender}${time ? ` (${time})` : ''}: ${msgContent}`;
-            });
+            }));
             const text = `[聊天记录合集 - ${records.length}条消息]\n${formattedRecords.join('\n')}`;
             log?.info?.("[dingtalk] Parsed chatRecord with " + records.length + " messages");
             return {
