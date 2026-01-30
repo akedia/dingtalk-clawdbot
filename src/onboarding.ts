@@ -146,7 +146,7 @@ export async function onboardDingTalk(ctx: { runtime: any; accountId: string }) 
   await runtime.config.set('channels.dingtalk', config);
 
   ui.success('\n✓ 配置完成！');
-  ui.info('下一步: 运行 clawdbot gateway 启动网关\n');
+  ui.info('下一步: 运行 openclaw gateway 启动网关\n');
 
   return config;
 }

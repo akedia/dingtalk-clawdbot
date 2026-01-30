@@ -6,10 +6,10 @@
 
 ```bash
 # 升级插件
-clawdbot plugins update dingtalk
+openclaw plugins update dingtalk
 
 # 重启 gateway
-clawdbot gateway restart
+openclaw gateway restart
 ```
 
 ### 远端服务器升级
@@ -19,7 +19,7 @@ clawdbot gateway restart
 ssh root@<your-server> "sudo -u clawd \
   XDG_RUNTIME_DIR=/run/user/1001 \
   DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
-  bash -c 'clawdbot plugins update dingtalk && clawdbot gateway restart'"
+  bash -c 'openclaw plugins update dingtalk && openclaw gateway restart'"
 ```
 
 > **注意**: `su - clawd` 不建立 systemd 用户会话，必须注入环境变量。
@@ -29,9 +29,9 @@ ssh root@<your-server> "sudo -u clawd \
 ## 首次安装
 
 ```bash
-clawdbot plugins install @yaoyuanchao/dingtalk
-clawdbot onboard --channel dingtalk   # 交互式配置向导
-clawdbot gateway restart
+openclaw plugins install @yaoyuanchao/dingtalk
+openclaw onboard --channel dingtalk   # 交互式配置向导
+openclaw gateway restart
 ```
 
 ---
@@ -43,31 +43,31 @@ clawdbot gateway restart
 如果遇到超时或网络问题，可手动安装：
 
 ```bash
-cd ~/.clawdbot/extensions
+cd ~/.openclaw/extensions
 rm -rf dingtalk
 npm pack @yaoyuanchao/dingtalk
 tar -xzf yaoyuanchao-dingtalk-*.tgz
 mv package dingtalk
 rm yaoyuanchao-dingtalk-*.tgz
 cd dingtalk && npm install --omit=dev
-clawdbot gateway restart
+openclaw gateway restart
 ```
 
 ### 配置验证失败: `plugin not found: dingtalk`
 
 删除了插件目录但未重新安装：
 ```bash
-clawdbot plugins install @yaoyuanchao/dingtalk
+openclaw plugins install @yaoyuanchao/dingtalk
 ```
 
 ### Stream 连接失败
 
 ```bash
 # 检查凭证
-cat ~/.clawdbot/clawdbot.json | jq '.channels.dingtalk | {clientId, clientSecret}'
+cat ~/.openclaw/openclaw.json | jq '.channels.dingtalk | {clientId, clientSecret}'
 
 # 重新配置
-clawdbot onboard --channel dingtalk
+openclaw onboard --channel dingtalk
 ```
 
 ---

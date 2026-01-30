@@ -9,18 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Remove peerDependencies** — removed `clawdbot` from peerDependencies to prevent npm 7+ from installing the entire clawdbot package (400+ deps, ~55MB) into plugin's node_modules; clawdbot is injected at runtime via jiti alias
-- **`clawdbot plugins update` now works** — installation reduced from timeout (~5min+) to seconds
+- **Remove peerDependencies** — removed `openclaw` from peerDependencies to prevent npm 7+ from installing the entire openclaw package (400+ deps, ~55MB) into plugin's node_modules; openclaw is injected at runtime via jiti alias
+- **`openclaw plugins update` now works** — installation reduced from timeout (~5min+) to seconds
 
 ## [1.4.9] - 2026-01-30
 
 ### Fixed
 
-- **zod v4 compatibility** — upgraded zod dependency from `^3.22.0` to `^4.3.6` to match clawdbot's version; fixed `ZodError.errors` → `ZodError.issues` API change
+- **zod v4 compatibility** — upgraded zod dependency from `^3.22.0` to `^4.3.6` to match openclaw's version; fixed `ZodError.errors` → `ZodError.issues` API change
 
 ### Changed
 
-- **Dependency alignment** — now uses same zod version as clawdbot core and clawdbot-feishu plugin
+- **Dependency alignment** — now uses same zod version as openclaw core and openclaw-feishu plugin
 
 ## [1.3.6] - 2026-01-28
 
@@ -66,17 +66,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🎉 Major Features - Official Plugin Release
 
-This release transforms the DingTalk plugin into an official Clawdbot plugin that can be installed via `clawdbot plugins install` command.
+This release transforms the DingTalk plugin into an official Openclaw plugin that can be installed via `openclaw plugins install` command.
 
 ### Added
 
 - **Official NPM Installation Support**
   - Published to NPM as `@yaoyuanchao/dingtalk`
-  - Install with: `clawdbot plugins install @yaoyuanchao/dingtalk`
-  - Added `clawdbot.install` configuration in package.json
+  - Install with: `openclaw plugins install @yaoyuanchao/dingtalk`
+  - Added `openclaw.install` configuration in package.json
 
 - **Interactive Onboarding Wizard** (`src/onboarding.ts`)
-  - Run with: `clawdbot onboard --channel dingtalk`
+  - Run with: `openclaw onboard --channel dingtalk`
   - Step-by-step guided configuration
   - Automatic connection testing
   - Policy selection with descriptions
@@ -101,11 +101,11 @@ This release transforms the DingTalk plugin into an official Clawdbot plugin tha
 ### Changed
 
 - **Package Configuration**
-  - Renamed from `@clawdbot/dingtalk` to `@yaoyuanchao/dingtalk`
+  - Renamed from `@openclaw/dingtalk` to `@yaoyuanchao/dingtalk`
   - Version bumped from 0.1.0 to 1.2.0
   - Added MIT license
   - Added keywords for NPM discoverability
-  - Added `peerDependencies` for clawdbot version requirement
+  - Added `peerDependencies` for openclaw version requirement
   - Added `files` field to control NPM publish content
 
 - **Configuration Validation**
@@ -120,7 +120,7 @@ This release transforms the DingTalk plugin into an official Clawdbot plugin tha
 ### Technical Details
 
 - **Dependencies**: Added `zod@^3.22.0`
-- **Peer Dependencies**: Requires `clawdbot >= 2026.1.24`
+- **Peer Dependencies**: Requires `openclaw >= 2026.1.24`
 - **TypeScript**: Published as TypeScript source (not compiled JS)
 - **Backward Compatibility**: All v0.1.0 features preserved
 
@@ -171,13 +171,13 @@ Summary:
 
 - **Configuration**
   - Environment variable support (DINGTALK_CLIENT_ID, etc.)
-  - JSON configuration in clawdbot.json
+  - JSON configuration in openclaw.json
   - Credential source detection (config vs env)
 
 - **Core Modules**
   - `src/monitor.ts` - Stream connection and message handling
   - `src/api.ts` - DingTalk REST API wrapper
-  - `src/channel.ts` - Clawdbot ChannelPlugin implementation
+  - `src/channel.ts` - Openclaw ChannelPlugin implementation
   - `src/accounts.ts` - Account credential resolution
   - `src/types.ts` - TypeScript type definitions
 
