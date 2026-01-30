@@ -1,4 +1,4 @@
-# DingTalk Channel Plugin for Clawdbot
+# DingTalk Channel Plugin for Openclaw
 
 [![npm version](https://img.shields.io/npm/v/@yaoyuanchao/dingtalk.svg)](https://www.npmjs.com/package/@yaoyuanchao/dingtalk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -19,7 +19,7 @@
 ## 前置要求
 
 1. 钉钉企业内部应用（已创建并配置 Stream 模式）
-2. Node.js 环境（clawdbot 已安装）
+2. Node.js 环境（openclaw 已安装）
 3. 应用的 AppKey (clientId) 和 AppSecret (clientSecret)
 
 ## 快速开始
@@ -30,13 +30,13 @@
 
 ```bash
 # 安装插件
-clawdbot plugins install @yaoyuanchao/dingtalk
+openclaw plugins install @yaoyuanchao/dingtalk
 
 # 运行交互式配置向导
-clawdbot onboard --channel dingtalk
+openclaw onboard --channel dingtalk
 
 # 启动网关
-clawdbot gateway
+openclaw gateway
 ```
 
 就这么简单！配置向导会引导你完成所有设置。
@@ -47,29 +47,29 @@ clawdbot gateway
 
 ```bash
 # 克隆或下载源码
-git clone https://github.com/yourusername/dingtalk-clawdbot.git
+git clone https://github.com/yourusername/dingtalk-openclaw.git
 
 # 本地安装
-cd dingtalk-clawdbot
+cd dingtalk-openclaw
 npm install
-clawdbot plugins install .
+openclaw plugins install .
 ```
 
 ## 配置说明
 
 ### 交互式配置（推荐）
 
-运行 `clawdbot onboard --channel dingtalk` 启动配置向导，它会：
+运行 `openclaw onboard --channel dingtalk` 启动配置向导，它会：
 
 1. ✅ 要求输入 Client ID 和 Client Secret
 2. ✅ 自动测试连接
 3. ✅ 引导选择私聊策略（Pairing/Allowlist/Open/Disabled）
 4. ✅ 引导选择群聊策略（Allowlist/Open/Disabled）
-5. ✅ 自动保存配置到 `~/.clawdbot/clawdbot.json`
+5. ✅ 自动保存配置到 `~/.openclaw/openclaw.json`
 
-### 手动配置 clawdbot.json
+### 手动配置 openclaw.json
 
-编辑 `~/.clawdbot/clawdbot.json`，添加 DingTalk 频道配置：
+编辑 `~/.openclaw/openclaw.json`，添加 DingTalk 频道配置：
 
 ```json
 {
@@ -121,21 +121,21 @@ clawdbot plugins install .
 }
 ```
 
-### 4. 启动 clawdbot gateway
+### 4. 启动 openclaw gateway
 
 ```bash
 # 如果已经在运行，需要重启
-clawdbot gateway restart
+openclaw gateway restart
 
 # 或者首次启动
-clawdbot gateway
+openclaw gateway
 ```
 
 ### 5. 查看日志验证
 
 ```bash
 # 查看实时日志
-tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log | grep dingtalk
+tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep dingtalk
 
 # 成功的标志：
 # [dingtalk:default] Starting Stream...
@@ -161,7 +161,7 @@ tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log | grep dingtalk
 1. 在群聊中 @机器人发送消息
 2. 查看 gateway 日志：
 ```bash
-tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log | grep "dingtalk.*Group"
+tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep "dingtalk.*Group"
 ```
 3. 日志会显示：`[dingtalk] Group from XXX: ...` 以及相关的 conversationId
 4. 或者查看日志中的 "Group not in allowlist" 消息获取 conversationId
@@ -245,7 +245,7 @@ tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log | grep "dingtalk.*Group"
 
 **解决方法**：
 ```bash
-clawdbot gateway restart
+openclaw gateway restart
 ```
 
 ## 技术细节
@@ -279,8 +279,8 @@ clawdbot gateway restart
 
 ### v1.2.0 (2026-01-28) - 官方插件发布
 
-- ✅ **官方 NPM 安装支持** - `clawdbot plugins install @yaoyuanchao/dingtalk`
-- ✅ **交互式配置向导** - `clawdbot onboard --channel dingtalk`
+- ✅ **官方 NPM 安装支持** - `openclaw plugins install @yaoyuanchao/dingtalk`
+- ✅ **交互式配置向导** - `openclaw onboard --channel dingtalk`
 - ✅ **Zod 配置验证** - 类型安全、自动错误提示
 - ✅ **健康检查** - 自动探测连接状态和延迟
 - ✅ 保留所有 v0.1.0 功能

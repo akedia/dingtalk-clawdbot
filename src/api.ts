@@ -222,7 +222,7 @@ export async function probeDingTalk(
 }
 
 /** User info cache - persisted to local file */
-const USER_CACHE_FILE = path.join(os.homedir(), ".clawdbot", "extensions", "dingtalk", ".cache", "users.json");
+const USER_CACHE_FILE = path.join(os.homedir(), ".openclaw", "extensions", "dingtalk", ".cache", "users.json");
 let userCache: Map<string, { name: string; avatar?: string }> | null = null;
 
 function loadUserCache(): Map<string, { name: string; avatar?: string }> {

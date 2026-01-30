@@ -682,7 +682,7 @@ async function processInboundMessage(
     }
   }
 
-  // Check if the full Clawdbot Plugin SDK pipeline is available
+  // Check if the full Openclaw Plugin SDK pipeline is available
   const hasFullPipeline = !!(
     runtime?.channel?.routing?.resolveAgentRoute &&
     runtime?.channel?.reply?.finalizeInboundContext &&
@@ -757,7 +757,7 @@ async function processInboundMessage(
 }
 
 /**
- * Dispatch using the full Clawdbot Plugin SDK pipeline.
+ * Dispatch using the full Openclaw Plugin SDK pipeline.
  * Uses resolveAgentRoute → session → envelope → finalizeContext → dispatch.
  */
 async function dispatchWithFullPipeline(params: {
@@ -864,7 +864,7 @@ async function dispatchWithFullPipeline(params: {
 
 /**
  * Extract text + media URL from a deliver payload.
- * The Clawdbot platform may send media URLs in separate fields (e.g. from the `message` tool).
+ * The Openclaw platform may send media URLs in separate fields (e.g. from the `message` tool).
  * We merge them into the text as markdown image syntax so DingTalk can render them.
  */
 function resolveDeliverText(payload: any, log?: any): string | undefined {

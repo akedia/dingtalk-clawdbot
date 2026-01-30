@@ -2,17 +2,17 @@
   "name": "@yaoyuanchao/dingtalk",
   "version": "1.4.10",
   "type": "module",
-  "description": "DingTalk channel plugin for Clawdbot with Stream Mode support",
+  "description": "DingTalk channel plugin for Openclaw with Stream Mode support",
   "license": "MIT",
   "author": "Yao Yuanchao",
   "keywords": [
-    "clawdbot",
+    "openclaw",
     "dingtalk",
     "channel-plugin",
     "stream-mode",
     "ai-assistant"
   ],
-  "clawdbot": {
+  "openclaw": {
     "extensions": [
       "./index.ts"
     ],
@@ -44,7 +44,7 @@
   "files": [
     "index.ts",
     "src/**/*.ts",
-    "clawdbot.plugin.json",
+    "openclaw.plugin.json",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
