@@ -70,6 +70,29 @@ function httpGetBuffer(url: string, headers?: Record<string, string>): Promise<B
   });
 }
 
+/** Retry wrapper for async functions */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  delayMs: number = 1000,
+  backoffMultiplier: number = 2,
+): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < maxRetries) {
+        const delay = delayMs * Math.pow(backoffMultiplier, attempt - 1);
+        console.log(`[dingtalk] Retry ${attempt}/${maxRetries} after ${delay}ms: ${lastError.message}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+}
+
 export async function getDingTalkAccessToken(clientId: string, clientSecret: string): Promise<string> {
   const cached = tokenCache.get(clientId);
   if (cached && cached.expiresAt > Date.now() + 60_000) {
@@ -337,9 +360,14 @@ export async function downloadPicture(
       return { error: response.errmsg || "Download failed" };
     }
 
-    // If response has a file URL, download it
+    // If response has a file URL, download it with retry
     if (response.downloadUrl) {
-      const imageBuffer = await httpGetBuffer(response.downloadUrl);
+      const imageBuffer = await withRetry(
+        () => httpGetBuffer(response.downloadUrl),
+        3,  // maxRetries
+        1000,  // initial delay 1s
+        2,  // backoff multiplier
+      );
 
       // Convert to base64
       const base64 = imageBuffer.toString('base64');
@@ -404,7 +432,12 @@ export async function downloadMediaFile(
     }
 
     if (response.downloadUrl) {
-      const mediaBuffer = await httpGetBuffer(response.downloadUrl);
+      const mediaBuffer = await withRetry(
+        () => httpGetBuffer(response.downloadUrl),
+        3,  // maxRetries
+        1000,  // initial delay 1s
+        2,  // backoff multiplier
+      );
 
       if (!fs.existsSync(TEMP_DIR)) {
         fs.mkdirSync(TEMP_DIR, { recursive: true });
