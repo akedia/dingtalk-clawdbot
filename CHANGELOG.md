@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.10] - 2026-01-30
+
+### Fixed
+
+- **Remove peerDependencies** — removed `clawdbot` from peerDependencies to prevent npm 7+ from installing the entire clawdbot package (400+ deps, ~55MB) into plugin's node_modules; clawdbot is injected at runtime via jiti alias
+- **`clawdbot plugins update` now works** — installation reduced from timeout (~5min+) to seconds
+
+## [1.4.9] - 2026-01-30
+
+### Fixed
+
+- **zod v4 compatibility** — upgraded zod dependency from `^3.22.0` to `^4.3.6` to match clawdbot's version; fixed `ZodError.errors` → `ZodError.issues` API change
+
+### Changed
+
+- **Dependency alignment** — now uses same zod version as clawdbot core and clawdbot-feishu plugin
+
 ## [1.3.6] - 2026-01-28
 
 ### Fixed

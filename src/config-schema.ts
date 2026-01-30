@@ -87,11 +87,11 @@ export function validateDingTalkConfig(config: unknown): DingTalkConfig {
     return dingTalkConfigSchema.parse(config);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      const issues = error.errors.map(e => {
+      const formatted = error.issues.map(e => {
         const path = e.path.join('.');
         return `  - ${path || 'root'}: ${e.message}`;
       }).join('\n');
-      throw new Error(`DingTalk config validation failed:\n${issues}`);
+      throw new Error(`DingTalk config validation failed:\n${formatted}`);
     }
     throw error;
   }
@@ -110,11 +110,11 @@ export function safeValidateDingTalkConfig(config: unknown):
     return { success: true, data };
   } catch (error) {
     if (error instanceof z.ZodError) {
-      const issues = error.errors.map(e => {
+      const formatted = error.issues.map(e => {
         const path = e.path.join('.');
         return `${path || 'root'}: ${e.message}`;
       }).join('; ');
-      return { success: false, error: issues };
+      return { success: false, error: formatted };
     }
     return { success: false, error: String(error) };
   }
