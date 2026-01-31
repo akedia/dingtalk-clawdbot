@@ -354,5 +354,33 @@ ssh root@172.20.90.45 "ls -la /home/clawd/.clawdbot/extensions/"
 ssh root@172.20.90.45 "rm -rf /home/clawd/.clawdbot/extensions/dingtalk.backup-*"
 ```
 
+## 已知问题
+
+### SDK 报错 `Cannot read properties of undefined (reading 'some')`
+
+**症状**：
+- Agent 收到请求后立即返回错误消息给用户
+- 日志显示 agent 只运行了几毫秒就结束
+- 可能伴随 "Removed orphaned user message" 警告
+
+**根因**（2026-01-31 确认）：
+- `listActions` 返回的数组中缺少 `sendAttachment`
+- SDK 在构建 message tool schema 时依赖 `listActions` 返回的 action 列表
+- 如果 action 在 `MESSAGE_ACTION_TARGET_MODE` 中定义但不在 `listActions` 返回值中，SDK 内部会出错
+
+**解决方案**：
+```typescript
+// 确保 listActions 返回所有支持的 actions
+listActions({ cfg }: { cfg: any }) {
+  return ['send', 'sendAttachment'];  // 不要遗漏任何 action
+}
+```
+
+**验证**：
+```bash
+# 检查远端 listActions 返回值
+ssh root@172.20.90.45 "grep -A2 'listActions' /home/clawd/.clawdbot/extensions/dingtalk/src/channel.ts"
+```
+
 ---
-**最后更新**: 2026-01-30
+**最后更新**: 2026-01-31

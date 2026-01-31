@@ -1,5 +1,5 @@
 import type { DingTalkRobotMessage, ResolvedDingTalkAccount, ExtractedMessage } from "./types.js";
-import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia } from "./api.js";
+import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia, uploadMediaFile, sendFileMessage, textToMarkdownFile } from "./api.js";
 import { getDingTalkRuntime } from "./runtime.js";
 
 export interface DingTalkMonitorContext {
@@ -890,8 +890,26 @@ function resolveDeliverText(payload: any, log?: any): string | undefined {
 
 async function deliverReply(target: any, text: string, log?: any): Promise<void> {
   const now = Date.now();
-  const chunkLimit = 2000;
+  const chunkLimit = target.account.config.textChunkLimit ?? 2000;
   const messageFormat = target.account.config.messageFormat ?? "text";
+  const longTextMode = target.account.config.longTextMode ?? "chunk";
+  const longTextThreshold = target.account.config.longTextThreshold ?? 4000;
+
+  // Check if we should send as file instead of text
+  if (longTextMode === 'file' && text.length > longTextThreshold) {
+    log?.info?.("[dingtalk] Text exceeds threshold (" + text.length + " > " + longTextThreshold + "), sending as file");
+
+    // Only attempt file send if we have credentials (REST API required)
+    if (target.account.clientId && target.account.clientSecret) {
+      const fileSent = await sendTextAsFile(target, text, log);
+      if (fileSent) {
+        return; // Successfully sent as file
+      }
+      log?.info?.("[dingtalk] File send failed, falling back to chunked text");
+    } else {
+      log?.info?.("[dingtalk] No credentials for file send, falling back to chunked text");
+    }
+  }
 
   // Determine if this message should use markdown format
   let isMarkdown: boolean;
@@ -973,6 +991,57 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
     } else if (!webhookSuccess) {
       log?.info?.("[dingtalk] No delivery method available!");
     }
+  }
+}
+
+/**
+ * Helper function to send text as a markdown file
+ * Used when longTextMode is 'file' and text exceeds threshold
+ */
+async function sendTextAsFile(target: any, text: string, log?: any): Promise<boolean> {
+  try {
+    // Generate markdown file with UTF-8 BOM for proper Chinese display
+    const { buffer, fileName } = textToMarkdownFile(text, "AI Response");
+    log?.info?.("[dingtalk] Converting text to file: " + fileName + " (" + buffer.length + " bytes)");
+
+    // Upload the file
+    const uploadResult = await uploadMediaFile({
+      clientId: target.account.clientId,
+      clientSecret: target.account.clientSecret,
+      robotCode: target.account.robotCode || target.account.clientId,
+      fileBuffer: buffer,
+      fileName: fileName,
+      fileType: 'file',
+    });
+
+    if (!uploadResult.mediaId) {
+      log?.info?.("[dingtalk] File upload failed: " + (uploadResult.error || "no mediaId returned"));
+      return false;
+    }
+
+    log?.info?.("[dingtalk] File uploaded, mediaId=" + uploadResult.mediaId);
+
+    // Send the file message
+    const sendResult = await sendFileMessage({
+      clientId: target.account.clientId,
+      clientSecret: target.account.clientSecret,
+      robotCode: target.account.robotCode || target.account.clientId,
+      userId: target.isDm ? target.senderId : undefined,
+      conversationId: !target.isDm ? target.conversationId : undefined,
+      mediaId: uploadResult.mediaId,
+      fileName: fileName,
+    });
+
+    if (!sendResult.ok) {
+      log?.info?.("[dingtalk] File send failed: " + (sendResult.error || "unknown error"));
+      return false;
+    }
+
+    log?.info?.("[dingtalk] File sent successfully");
+    return true;
+  } catch (err) {
+    log?.info?.("[dingtalk] sendTextAsFile error: " + (err instanceof Error ? err.message : String(err)));
+    return false;
   }
 }
 

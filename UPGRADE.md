@@ -76,6 +76,14 @@ clawdbot onboard --channel dingtalk
 
 | 版本 | 关键变更 |
 |------|---------|
+| v1.4.18 | 修复 sendAttachment 返回格式，避免 SDK 报错；默认阈值改为 8000 |
+| v1.4.17 | 添加 listActions，让 SDK 告知 agent 支持 sendAttachment |
+| v1.4.16 | 支持 sendAttachment action，agent 可主动发送文件 |
+| v1.4.15 | 新增 outbound.sendFile 能力，支持主动发送文件 |
+| v1.4.14 | message 工具默认使用 markdown 格式发送 |
+| v1.4.13 | message 工具支持 longTextMode=file |
+| v1.4.12 | 修复文件上传 API (切换到 oapi 端点) |
+| v1.4.11 | 新增 longTextMode=file 配置，支持长文本转.md文件发送 |
 | v1.4.10 | 移除 peerDependencies，官方升级命令可用 |
 | v1.4.9 | zod v4 兼容性修复 |
 | v1.4.7 | chatRecord 消息图片下载 |
@@ -84,4 +92,4 @@ clawdbot onboard --channel dingtalk
 
 ---
 
-**最后更新**: 2026-01-30 (v1.4.10)
+**最后更新**: 2026-01-31 (v1.4.18)

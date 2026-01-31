@@ -1,7 +1,7 @@
 import { getDingTalkRuntime } from './runtime.js';
 import { resolveDingTalkAccount } from './accounts.js';
 import { startDingTalkMonitor } from './monitor.js';
-import { sendDingTalkRestMessage } from './api.js';
+import { sendDingTalkRestMessage, uploadMediaFile, sendFileMessage, textToMarkdownFile } from './api.js';
 import { probeDingTalk } from './probe.js';
 
 /**
@@ -38,6 +38,7 @@ export const dingtalkPlugin = {
   capabilities: {
     chatTypes: ['direct', 'group'],
     media: true, // Supports images via markdown in sessionWebhook replies
+    files: true, // Supports file upload and sending
     threads: false,
     reactions: false,
     mentions: true,
@@ -187,6 +188,49 @@ export const dingtalkPlugin = {
       const account = resolveDingTalkAccount({ cfg, accountId });
       const { type, id } = parseOutboundTo(to);
 
+      // Check longTextMode config
+      const longTextMode = account.config?.longTextMode ?? 'chunk';
+      const longTextThreshold = account.config?.longTextThreshold ?? 4000;
+
+      // If longTextMode is 'file' and text exceeds threshold, send as file
+      if (longTextMode === 'file' && text.length > longTextThreshold) {
+        console.log(`[dingtalk] Outbound text exceeds threshold (${text.length} > ${longTextThreshold}), sending as file`);
+
+        const { buffer, fileName } = textToMarkdownFile(text, 'AI Response');
+
+        // Upload file
+        const uploadResult = await uploadMediaFile({
+          clientId: account.clientId,
+          clientSecret: account.clientSecret,
+          robotCode: account.robotCode || account.clientId,
+          fileBuffer: buffer,
+          fileName,
+          fileType: 'file',
+        });
+
+        if (uploadResult.mediaId) {
+          // Send file message
+          const sendResult = await sendFileMessage({
+            clientId: account.clientId,
+            clientSecret: account.clientSecret,
+            robotCode: account.robotCode || account.clientId,
+            userId: type === 'dm' ? id : undefined,
+            conversationId: type === 'group' ? id : undefined,
+            mediaId: uploadResult.mediaId,
+            fileName,
+          });
+
+          if (sendResult.ok) {
+            console.log(`[dingtalk] File sent successfully via outbound: ${fileName}`);
+            return { channel: 'dingtalk', ok: true };
+          }
+          console.log(`[dingtalk] File send failed, falling back to text: ${sendResult.error}`);
+        } else {
+          console.log(`[dingtalk] File upload failed, falling back to text: ${uploadResult.error}`);
+        }
+        // Fall through to text sending if file send fails
+      }
+
       if (type === 'dm') {
         await sendDingTalkRestMessage({
           clientId: account.clientId,
@@ -205,6 +249,56 @@ export const dingtalkPlugin = {
         });
       }
 
+      return { channel: 'dingtalk', ok: true };
+    },
+
+    async sendFile({ to, content, fileName, accountId, cfg }) {
+      const account = resolveDingTalkAccount({ cfg, accountId });
+      const { type, id } = parseOutboundTo(to);
+
+      // Convert content to buffer if it's a string
+      let fileBuffer: Buffer;
+      if (typeof content === 'string') {
+        // Add UTF-8 BOM for text files (better Chinese display)
+        const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+        const textContent = Buffer.from(content, 'utf-8');
+        fileBuffer = Buffer.concat([bom, textContent]);
+      } else if (Buffer.isBuffer(content)) {
+        fileBuffer = content;
+      } else {
+        throw new Error('content must be a string or Buffer');
+      }
+
+      // Upload file to DingTalk
+      const uploadResult = await uploadMediaFile({
+        clientId: account.clientId,
+        clientSecret: account.clientSecret,
+        robotCode: account.robotCode || account.clientId,
+        fileBuffer,
+        fileName: fileName || 'file.txt',
+        fileType: 'file',
+      });
+
+      if (!uploadResult.mediaId) {
+        throw new Error(`File upload failed: ${uploadResult.error}`);
+      }
+
+      // Send file message
+      const sendResult = await sendFileMessage({
+        clientId: account.clientId,
+        clientSecret: account.clientSecret,
+        robotCode: account.robotCode || account.clientId,
+        userId: type === 'dm' ? id : undefined,
+        conversationId: type === 'group' ? id : undefined,
+        mediaId: uploadResult.mediaId,
+        fileName: fileName || 'file.txt',
+      });
+
+      if (!sendResult.ok) {
+        throw new Error(`File send failed: ${sendResult.error}`);
+      }
+
+      console.log(`[dingtalk] File sent via outbound.sendFile: ${fileName}`);
       return { channel: 'dingtalk', ok: true };
     },
 
@@ -250,6 +344,97 @@ export const dingtalkPlugin = {
       }
 
       return { channel: 'dingtalk', ok: true };
+    },
+  },
+
+  // Handle message actions (sendAttachment, etc.)
+  actions: {
+    // List supported actions for this channel - SDK uses this to tell agent what's available
+    listActions({ cfg }: { cfg: any }) {
+      return ['send', 'sendAttachment'];
+    },
+
+    supportsAction({ action }: { action: string }) {
+      return action === 'sendAttachment' || action === 'send';
+    },
+
+    async handleAction(ctx: any) {
+      const { action, params, cfg, accountId } = ctx;
+
+      // Only handle sendAttachment action
+      if (action !== 'sendAttachment') {
+        return null; // Let SDK handle other actions
+      }
+
+      const buffer = params?.buffer;
+      const filename = params?.filename || 'attachment.bin';
+      const target = params?.target;
+
+      if (!buffer || !target) {
+        return null; // Let SDK handle if missing required params
+      }
+
+      const account = resolveDingTalkAccount({ cfg, accountId });
+      const { type, id } = parseOutboundTo(target);
+
+      // Decode base64 buffer
+      let fileBuffer: Buffer;
+      try {
+        fileBuffer = Buffer.from(buffer, 'base64');
+      } catch {
+        return { ok: false, error: 'Invalid base64 buffer' };
+      }
+
+      // Add UTF-8 BOM for text files
+      const isTextFile = /\.(txt|md|json|csv|xml|html?)$/i.test(filename);
+      if (isTextFile) {
+        const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+        // Check if BOM already exists
+        if (fileBuffer[0] !== 0xEF || fileBuffer[1] !== 0xBB || fileBuffer[2] !== 0xBF) {
+          fileBuffer = Buffer.concat([bom, fileBuffer]);
+        }
+      }
+
+      // Upload file
+      const uploadResult = await uploadMediaFile({
+        clientId: account.clientId,
+        clientSecret: account.clientSecret,
+        robotCode: account.robotCode || account.clientId,
+        fileBuffer,
+        fileName: filename,
+        fileType: 'file',
+      });
+
+      if (!uploadResult.mediaId) {
+        console.warn(`[dingtalk] sendAttachment upload failed: ${uploadResult.error}`);
+        return { ok: false, error: uploadResult.error };
+      }
+
+      // Send file
+      const sendResult = await sendFileMessage({
+        clientId: account.clientId,
+        clientSecret: account.clientSecret,
+        robotCode: account.robotCode || account.clientId,
+        userId: type === 'dm' ? id : undefined,
+        conversationId: type === 'group' ? id : undefined,
+        mediaId: uploadResult.mediaId,
+        fileName: filename,
+      });
+
+      if (!sendResult.ok) {
+        console.warn(`[dingtalk] sendAttachment send failed: ${sendResult.error}`);
+        return { ok: false, error: sendResult.error };
+      }
+
+      console.log(`[dingtalk] sendAttachment success: ${filename}`);
+      // Return format compatible with SDK expectations
+      return {
+        ok: true,
+        channel: 'dingtalk',
+        filename,
+        // SDK expects content array format for tool results
+        content: [{ type: 'text', text: JSON.stringify({ ok: true, filename }) }],
+      };
     },
   },
 

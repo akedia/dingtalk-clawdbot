@@ -167,9 +167,17 @@ export async function sendDingTalkRestMessage(params: {
   userId?: string;
   conversationId?: string;
   text: string;
+  format?: 'text' | 'markdown';
 }): Promise<{ ok: boolean }> {
   const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
   const headers = { "x-acs-dingtalk-access-token": token };
+
+  // Use markdown format by default for better rendering
+  const useMarkdown = params.format !== 'text';
+  const msgKey = useMarkdown ? 'sampleMarkdown' : 'sampleText';
+  const msgParam = useMarkdown
+    ? JSON.stringify({ title: 'AI', text: params.text })
+    : JSON.stringify({ content: params.text });
 
   if (params.userId) {
     const res = await jsonPost(
@@ -177,8 +185,8 @@ export async function sendDingTalkRestMessage(params: {
       {
         robotCode: params.robotCode,
         userIds: [params.userId],
-        msgKey: "sampleText",
-        msgParam: JSON.stringify({ content: params.text }),
+        msgKey,
+        msgParam,
       },
       headers,
     );
@@ -194,8 +202,8 @@ export async function sendDingTalkRestMessage(params: {
       {
         robotCode: params.robotCode,
         openConversationId: params.conversationId,
-        msgKey: "sampleText",
-        msgParam: JSON.stringify({ content: params.text }),
+        msgKey,
+        msgParam,
       },
       headers,
     );
@@ -494,3 +502,190 @@ export function cleanupOldMedia(): void {
 
 /** @deprecated Use cleanupOldMedia() instead */
 export const cleanupOldPictures = cleanupOldMedia;
+
+/**
+ * Upload a file to DingTalk and get media_id
+ * Uses the legacy oapi media upload endpoint (the new API doesn't exist)
+ */
+export async function uploadMediaFile(params: {
+  clientId: string;
+  clientSecret: string;
+  robotCode: string;
+  fileBuffer: Buffer;
+  fileName: string;
+  fileType?: 'image' | 'voice' | 'video' | 'file';
+}): Promise<{ mediaId?: string; error?: string }> {
+  try {
+    const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
+
+    // Build multipart form data manually
+    const boundary = `----DingTalkBoundary${Date.now()}`;
+    const fileType = params.fileType || 'file';
+
+    // Construct multipart body - oapi uses "media" as the file field name
+    const parts: Buffer[] = [];
+
+    // Add file field
+    parts.push(Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="media"; filename="${params.fileName}"\r\n` +
+      `Content-Type: application/octet-stream\r\n\r\n`
+    ));
+    parts.push(params.fileBuffer);
+    parts.push(Buffer.from('\r\n'));
+
+    // End boundary
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+
+    const body = Buffer.concat(parts);
+
+    // Use legacy oapi endpoint - the new v1.0 API doesn't have this endpoint
+    const url = `https://oapi.dingtalk.com/media/upload?access_token=${token}&type=${fileType}`;
+
+    return new Promise((resolve) => {
+      const urlObj = new URL(url);
+      const req = https.request(urlObj, {
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': body.length,
+        },
+        timeout: 60000, // 60 second timeout for upload
+        family: 4,
+      }, (res) => {
+        let buf = '';
+        res.on('data', (chunk: any) => { buf += chunk; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(buf);
+            // oapi returns media_id (with underscore), not mediaId
+            if (json.media_id) {
+              console.log(`[dingtalk] File uploaded successfully: media_id=${json.media_id}`);
+              resolve({ mediaId: json.media_id });
+            } else if (json.mediaId) {
+              console.log(`[dingtalk] File uploaded successfully: mediaId=${json.mediaId}`);
+              resolve({ mediaId: json.mediaId });
+            } else {
+              console.warn(`[dingtalk] File upload failed:`, json);
+              resolve({ error: json.errmsg || json.message || 'Upload failed' });
+            }
+          } catch {
+            resolve({ error: `Invalid response: ${buf}` });
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        console.warn(`[dingtalk] File upload error:`, err);
+        resolve({ error: String(err) });
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ error: 'Upload timeout' });
+      });
+
+      req.write(body);
+      req.end();
+    });
+  } catch (err) {
+    console.warn(`[dingtalk] Error uploading file:`, err);
+    return { error: String(err) };
+  }
+}
+
+/**
+ * Send a file message via REST API
+ * Requires mediaId from uploadMediaFile
+ */
+export async function sendFileMessage(params: {
+  clientId: string;
+  clientSecret: string;
+  robotCode: string;
+  userId?: string;
+  conversationId?: string;
+  mediaId: string;
+  fileName: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
+    const headers = { 'x-acs-dingtalk-access-token': token };
+
+    const msgParam = JSON.stringify({
+      mediaId: params.mediaId,
+      fileName: params.fileName,
+      fileType: getFileExtension(params.fileName),
+    });
+
+    if (params.userId) {
+      // Send to DM
+      const res = await jsonPost(
+        `${DINGTALK_API_BASE}/robot/oToMessages/batchSend`,
+        {
+          robotCode: params.robotCode,
+          userIds: [params.userId],
+          msgKey: 'sampleFile',
+          msgParam,
+        },
+        headers,
+      );
+
+      if (res?.code || res?.errcode) {
+        console.warn(`[dingtalk] File send (DM) failed:`, res);
+        return { ok: false, error: res.message || res.errmsg };
+      }
+
+      console.log(`[dingtalk] File sent to DM: ${params.fileName}`);
+      return { ok: true };
+    }
+
+    if (params.conversationId) {
+      // Send to group
+      const res = await jsonPost(
+        `${DINGTALK_API_BASE}/robot/groupMessages/send`,
+        {
+          robotCode: params.robotCode,
+          openConversationId: params.conversationId,
+          msgKey: 'sampleFile',
+          msgParam,
+        },
+        headers,
+      );
+
+      if (res?.code || res?.errcode) {
+        console.warn(`[dingtalk] File send (group) failed:`, res);
+        return { ok: false, error: res.message || res.errmsg };
+      }
+
+      console.log(`[dingtalk] File sent to group: ${params.fileName}`);
+      return { ok: true };
+    }
+
+    return { ok: false, error: 'Either userId or conversationId required' };
+  } catch (err) {
+    console.warn(`[dingtalk] Error sending file:`, err);
+    return { ok: false, error: String(err) };
+  }
+}
+
+/** Get file extension from filename */
+function getFileExtension(fileName: string): string {
+  const ext = path.extname(fileName).toLowerCase();
+  return ext ? ext.slice(1) : 'bin';
+}
+
+/**
+ * Convert text to a markdown file buffer with UTF-8 BOM
+ * BOM is needed for proper Chinese display in DingTalk/Windows
+ */
+export function textToMarkdownFile(text: string, title?: string): { buffer: Buffer; fileName: string } {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const fileName = title ? `${title}.md` : `reply_${timestamp}.md`;
+
+  // Add UTF-8 BOM for proper Chinese display
+  const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+  const content = Buffer.from(text, 'utf-8');
+  const buffer = Buffer.concat([bom, content]);
+
+  return { buffer, fileName };
+}

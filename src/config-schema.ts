@@ -13,6 +13,8 @@ export const messageFormatSchema = z.enum(['text', 'markdown', 'richtext', 'auto
   description: 'Message format for bot responses (richtext is an alias for markdown, auto detects markdown features)',
 });
 
+export const longTextModeSchema = z.enum(['chunk', 'file']);
+
 // DingTalk 配置 Schema
 export const dingTalkConfigSchema = z.object({
   enabled: z.boolean().default(true).describe('Enable DingTalk channel'),
@@ -71,6 +73,16 @@ export const dingTalkConfigSchema = z.object({
   // 高级配置（可选）
   textChunkLimit: z.number().int().positive().default(2000).optional()
     .describe('Text chunk size limit for long messages'),
+
+  // 长文本处理
+  longTextMode: longTextModeSchema.default('chunk')
+    .describe(
+      'How to handle long text messages:\n' +
+      '  - chunk: Split into multiple messages (default, same as official channels)\n' +
+      '  - file: Convert to .md file and send as attachment'
+    ),
+  longTextThreshold: z.number().int().positive().default(8000).optional()
+    .describe('Character threshold for longTextMode=file (default 8000)'),
 }).strict();
 
 // 导出配置类型
