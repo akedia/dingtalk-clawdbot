@@ -83,6 +83,15 @@ export const dingTalkConfigSchema = z.object({
     ),
   longTextThreshold: z.number().int().positive().default(8000).optional()
     .describe('Character threshold for longTextMode=file (default 8000)'),
+
+  // 消息聚合
+  messageAggregation: z.boolean().default(true)
+    .describe(
+      'Aggregate messages from the same sender within a short time window.\n' +
+      'Useful when DingTalk splits link cards into multiple messages.'
+    ),
+  messageAggregationDelayMs: z.number().int().positive().default(2000).optional()
+    .describe('Time window in milliseconds to wait for additional messages (default 2000)'),
 }).strict();
 
 // 导出配置类型

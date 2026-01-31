@@ -76,6 +76,8 @@ clawdbot onboard --channel dingtalk
 
 | 版本 | 关键变更 |
 |------|---------|
+| v1.4.20 | 消息聚合：同一用户短时间内的多条消息合并处理，解决链接卡片分割问题 |
+| v1.4.19 | 支持链接卡片消息（link msgtype），用户分享的链接可被正确解析 |
 | v1.4.18 | 修复 sendAttachment 返回格式，避免 SDK 报错；默认阈值改为 8000 |
 | v1.4.17 | 添加 listActions，让 SDK 告知 agent 支持 sendAttachment |
 | v1.4.16 | 支持 sendAttachment action，agent 可主动发送文件 |
@@ -92,4 +94,4 @@ clawdbot onboard --channel dingtalk
 
 ---
 
-**最后更新**: 2026-01-31 (v1.4.18)
+**最后更新**: 2026-01-31 (v1.4.20)

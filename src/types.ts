@@ -18,6 +18,8 @@ export interface DingTalkRobotMessage {
   text?: { content: string; isReplyMsg?: boolean; repliedMsg?: any };
   richText?: unknown;
   picture?: { downloadCode: string };
+  /** Link card message content */
+  link?: { title?: string; text?: string; messageUrl?: string; picUrl?: string };
   /** Generic content field used by audio/video/file message types */
   content?: any;
   atUsers?: Array<{ dingtalkId: string; staffId?: string }>;

@@ -2,6 +2,35 @@ import type { DingTalkRobotMessage, ResolvedDingTalkAccount, ExtractedMessage } 
 import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia, uploadMediaFile, sendFileMessage, textToMarkdownFile } from "./api.js";
 import { getDingTalkRuntime } from "./runtime.js";
 
+// ============================================================================
+// Message Aggregation Buffer
+// ============================================================================
+// When users share links via DingTalk's "share link" feature, the message may
+// arrive as multiple separate messages (text + URL). This buffer aggregates
+// messages from the same sender within a short time window.
+
+interface BufferedMessage {
+  messages: Array<{ text: string; timestamp: number; mediaPath?: string; mediaType?: string }>;
+  timer: ReturnType<typeof setTimeout>;
+  ctx: DingTalkMonitorContext;
+  msg: DingTalkRobotMessage;  // Keep latest msg for reply target
+  replyTarget: any;
+  sessionKey: string;
+  isDm: boolean;
+  senderId: string;
+  senderName: string;
+  conversationId: string;
+}
+
+const messageBuffer = new Map<string, BufferedMessage>();
+const AGGREGATION_DELAY_MS = 2000; // 2 seconds - balance between UX and catching split messages
+
+function getBufferKey(msg: DingTalkRobotMessage, accountId: string): string {
+  return `${accountId}:${msg.conversationId}:${msg.senderId || msg.senderStaffId}`;
+}
+
+// ============================================================================
+
 export interface DingTalkMonitorContext {
   account: ResolvedDingTalkAccount;
   cfg: any;
@@ -149,6 +178,40 @@ async function extractMessageContent(
         mediaType: 'file',
         mediaFileName: fileName,
         messageType: 'file',
+      };
+    }
+
+    case 'link': {
+      // Link card message - contains title, text, messageUrl, and optional picUrl
+      // Structure: msg.link = { title, text, messageUrl, picUrl }
+      const linkContent = msg.link || content;
+      log?.info?.("[dingtalk] link message received: " + JSON.stringify(linkContent));
+
+      if (linkContent) {
+        const title = linkContent.title || '';
+        const text = linkContent.text || '';
+        const messageUrl = linkContent.messageUrl || '';
+        const picUrl = linkContent.picUrl || '';
+
+        // Combine all parts into a readable format
+        const parts: string[] = [];
+        if (title) parts.push(`[链接] ${title}`);
+        if (text) parts.push(text);
+        if (messageUrl) parts.push(`链接: ${messageUrl}`);
+        if (picUrl) parts.push(`配图: ${picUrl}`);
+
+        const resultText = parts.join('\n') || '[链接卡片]';
+        log?.info?.("[dingtalk] Extracted link message: " + resultText.slice(0, 100));
+
+        return {
+          text: resultText,
+          messageType: 'link',
+        };
+      }
+
+      return {
+        text: '[链接卡片]',
+        messageType: 'link',
       };
     }
 
@@ -662,10 +725,138 @@ async function processInboundMessage(
     account,
   };
 
+  // Check if message aggregation is enabled
+  const aggregationEnabled = account.config.messageAggregation !== false;
+  const aggregationDelayMs = account.config.messageAggregationDelayMs ?? AGGREGATION_DELAY_MS;
+
+  if (aggregationEnabled) {
+    // Buffer this message for aggregation
+    await bufferMessageForAggregation({
+      msg, ctx, rawBody, replyTarget, sessionKey, isDm, senderId, senderName, conversationId,
+      mediaPath, mediaType,
+    });
+    return; // Actual dispatch happens when timer fires
+  }
+
+  // No aggregation - dispatch immediately
+  await dispatchMessage({
+    ctx, msg, rawBody, replyTarget, sessionKey, isDm, senderId, senderName, conversationId,
+    mediaPath, mediaType,
+  });
+}
+
+/**
+ * Buffer a message for aggregation with other messages from the same sender.
+ */
+async function bufferMessageForAggregation(params: {
+  msg: DingTalkRobotMessage;
+  ctx: DingTalkMonitorContext;
+  rawBody: string;
+  replyTarget: any;
+  sessionKey: string;
+  isDm: boolean;
+  senderId: string;
+  senderName: string;
+  conversationId: string;
+  mediaPath?: string;
+  mediaType?: string;
+}): Promise<void> {
+  const { msg, ctx, rawBody, replyTarget, sessionKey, isDm, senderId, senderName, conversationId, mediaPath, mediaType } = params;
+  const { account, log } = ctx;
+  const bufferKey = getBufferKey(msg, account.accountId);
+  const aggregationDelayMs = account.config.messageAggregationDelayMs ?? AGGREGATION_DELAY_MS;
+
+  const existing = messageBuffer.get(bufferKey);
+
+  if (existing) {
+    // Add to existing buffer
+    existing.messages.push({ text: rawBody, timestamp: Date.now(), mediaPath, mediaType });
+    // Update to latest msg for reply target (use latest sessionWebhook)
+    existing.msg = msg;
+    existing.replyTarget = replyTarget;
+
+    // Reset timer
+    clearTimeout(existing.timer);
+    existing.timer = setTimeout(() => {
+      flushMessageBuffer(bufferKey);
+    }, aggregationDelayMs);
+
+    log?.info?.(`[dingtalk] Message buffered, total: ${existing.messages.length} messages`);
+  } else {
+    // Create new buffer entry
+    const newEntry: BufferedMessage = {
+      messages: [{ text: rawBody, timestamp: Date.now(), mediaPath, mediaType }],
+      timer: setTimeout(() => {
+        flushMessageBuffer(bufferKey);
+      }, aggregationDelayMs),
+      ctx,
+      msg,
+      replyTarget,
+      sessionKey,
+      isDm,
+      senderId,
+      senderName,
+      conversationId,
+    };
+    messageBuffer.set(bufferKey, newEntry);
+
+    log?.info?.(`[dingtalk] Message buffered (new), waiting ${aggregationDelayMs}ms for more...`);
+  }
+}
+
+/**
+ * Flush the message buffer and dispatch the combined message.
+ */
+async function flushMessageBuffer(bufferKey: string): Promise<void> {
+  const entry = messageBuffer.get(bufferKey);
+  if (!entry) return;
+
+  messageBuffer.delete(bufferKey);
+
+  const { messages, ctx, msg, replyTarget, sessionKey, isDm, senderId, senderName, conversationId } = entry;
+  const { log } = ctx;
+
+  // Combine all messages
+  const combinedText = messages.map(m => m.text).join('\n');
+  // Use the last media if any
+  const lastWithMedia = [...messages].reverse().find(m => m.mediaPath);
+  const mediaPath = lastWithMedia?.mediaPath;
+  const mediaType = lastWithMedia?.mediaType;
+
+  log?.info?.(`[dingtalk] Flushing buffer: ${messages.length} message(s) combined into ${combinedText.length} chars`);
+
+  // Dispatch the combined message
+  await dispatchMessage({
+    ctx, msg, rawBody: combinedText, replyTarget, sessionKey, isDm, senderId, senderName, conversationId,
+    mediaPath, mediaType,
+  });
+}
+
+/**
+ * Dispatch a message to the agent (after aggregation or immediately).
+ */
+async function dispatchMessage(params: {
+  ctx: DingTalkMonitorContext;
+  msg: DingTalkRobotMessage;
+  rawBody: string;
+  replyTarget: any;
+  sessionKey: string;
+  isDm: boolean;
+  senderId: string;
+  senderName: string;
+  conversationId: string;
+  mediaPath?: string;
+  mediaType?: string;
+}): Promise<void> {
+  const { ctx, msg, rawBody, replyTarget, sessionKey, isDm, senderId, senderName, conversationId, mediaPath, mediaType } = params;
+  const { account, cfg, log, setStatus } = ctx;
+  const runtime = getDingTalkRuntime();
+  const isGroup = !isDm;
+
   // Send thinking feedback (opt-in)
-  if (account.config.showThinking && msg.sessionWebhook) {
+  if (account.config.showThinking && replyTarget.sessionWebhook) {
     try {
-      await sendViaSessionWebhook(msg.sessionWebhook, '正在思考...');
+      await sendViaSessionWebhook(replyTarget.sessionWebhook, '正在思考...');
       log?.info?.('[dingtalk] Sent thinking indicator');
     } catch (_) {
       // fire-and-forget, don't block processing
