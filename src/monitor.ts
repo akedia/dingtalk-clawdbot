@@ -1,5 +1,5 @@
 import type { DingTalkRobotMessage, ResolvedDingTalkAccount, ExtractedMessage } from "./types.js";
-import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia, uploadMediaFile, sendFileMessage, textToMarkdownFile } from "./api.js";
+import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia, uploadMediaFile, sendFileMessage, textToMarkdownFile, sendTypingIndicator } from "./api.js";
 import { getDingTalkRuntime } from "./runtime.js";
 
 // ============================================================================
@@ -853,11 +853,40 @@ async function dispatchMessage(params: {
   const runtime = getDingTalkRuntime();
   const isGroup = !isDm;
 
-  // Send thinking feedback (opt-in)
-  if (account.config.showThinking && replyTarget.sessionWebhook) {
+  // Typing indicator cleanup function (will be called after dispatch completes)
+  let typingCleanup: (() => Promise<void>) | null = null;
+
+  // Send typing indicator (recallable) if enabled
+  // This replaces the old showThinking feature with a better UX - the indicator disappears when reply arrives
+  if (account.config.typingIndicator !== false && account.clientId && account.clientSecret) {
+    try {
+      const typingMessage = account.config.typingIndicatorMessage || '⏳ 思考中...';
+      const robotCode = account.robotCode || account.clientId;
+      
+      const result = await sendTypingIndicator({
+        clientId: account.clientId,
+        clientSecret: account.clientSecret,
+        robotCode,
+        userId: isDm ? senderId : undefined,
+        conversationId: !isDm ? conversationId : undefined,
+        message: typingMessage,
+      });
+      
+      if (result.error) {
+        log?.info?.('[dingtalk] Typing indicator failed: ' + result.error);
+      } else {
+        typingCleanup = result.cleanup;
+        log?.info?.('[dingtalk] Typing indicator sent (will be recalled on reply)');
+      }
+    } catch (err) {
+      log?.info?.('[dingtalk] Typing indicator error: ' + err);
+    }
+  }
+  // Legacy: Send thinking feedback (opt-in, non-recallable) - only if typingIndicator is explicitly disabled
+  else if (account.config.showThinking && replyTarget.sessionWebhook) {
     try {
       await sendViaSessionWebhook(replyTarget.sessionWebhook, '正在思考...');
-      log?.info?.('[dingtalk] Sent thinking indicator');
+      log?.info?.('[dingtalk] Sent thinking indicator (legacy, non-recallable)');
     } catch (_) {
       // fire-and-forget, don't block processing
     }
@@ -881,6 +910,20 @@ async function dispatchMessage(params: {
     runtime?.channel?.reply?.dispatchReplyFromConfig
   );
 
+  // Track if we've already cleaned up the typing indicator
+  let typingCleaned = false;
+  const cleanupTyping = async () => {
+    if (typingCleanup && !typingCleaned) {
+      typingCleaned = true;
+      try {
+        await typingCleanup();
+        log?.info?.('[dingtalk] Typing indicator recalled');
+      } catch (err) {
+        log?.info?.('[dingtalk] Failed to recall typing indicator: ' + err);
+      }
+    }
+  };
+
   try {
     if (hasFullPipeline) {
       // Full SDK pipeline: route → session → envelope → dispatch
@@ -888,6 +931,7 @@ async function dispatchMessage(params: {
         runtime, msg, rawBody, account, cfg: actualCfg, sessionKey, isDm,
         senderId, senderName, conversationId, replyTarget,
         mediaPath, mediaType, log, setStatus,
+        onFirstReply: cleanupTyping,
       });
     } else if (runtime?.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
       // Fallback: existing buffered block dispatcher
@@ -920,6 +964,9 @@ async function dispatchMessage(params: {
         cfg: actualCfg,
         dispatcherOptions: {
           deliver: async (payload: any) => {
+            // Recall typing indicator on first delivery
+            await cleanupTyping();
+            
             log?.info?.("[dingtalk] Deliver payload keys: " + Object.keys(payload || {}).join(',') + " text?=" + (typeof payload?.text) + " markdown?=" + (typeof payload?.markdown));
             const textToSend = resolveDeliverText(payload, log);
             if (textToSend) {
@@ -930,10 +977,13 @@ async function dispatchMessage(params: {
             }
           },
           onError: (err: any) => {
+            // Also cleanup on error
+            cleanupTyping().catch(() => {});
             log?.info?.("[dingtalk] Reply error: " + err);
           },
         },
       }).catch((err) => {
+        cleanupTyping().catch(() => {});
         log?.info?.("[dingtalk] Dispatch failed: " + err);
       });
 
@@ -941,8 +991,10 @@ async function dispatchMessage(params: {
       runtime.channel?.activity?.record?.('dingtalk', account.accountId, 'message');
     } else {
       log?.info?.("[dingtalk] Runtime dispatch not available");
+      await cleanupTyping();
     }
   } catch (err) {
+    await cleanupTyping();
     log?.info?.("[dingtalk] Dispatch error: " + err);
   }
 }
@@ -967,10 +1019,13 @@ async function dispatchWithFullPipeline(params: {
   mediaType?: string;
   log?: any;
   setStatus?: (update: Record<string, unknown>) => void;
+  onFirstReply?: () => Promise<void>;
 }): Promise<void> {
   const { runtime: rt, msg, rawBody, account, cfg, isDm,
           senderId, senderName, conversationId, replyTarget,
-          log, setStatus } = params;
+          log, setStatus, onFirstReply } = params;
+  
+  let firstReplyFired = false;
 
   // 1. Resolve agent route
   const route = rt.channel.routing.resolveAgentRoute({
@@ -1025,6 +1080,14 @@ async function dispatchWithFullPipeline(params: {
   const { dispatcher, replyOptions, markDispatchIdle } = rt.channel.reply.createReplyDispatcherWithTyping({
     responsePrefix: '',
     deliver: async (payload: any) => {
+      // Recall typing indicator on first delivery
+      if (!firstReplyFired && onFirstReply) {
+        firstReplyFired = true;
+        await onFirstReply().catch((err) => {
+          log?.info?.("[dingtalk] onFirstReply error: " + err);
+        });
+      }
+      
       try {
         log?.info?.("[dingtalk] Pipeline deliver payload keys: " + Object.keys(payload || {}).join(',') + " text?=" + (typeof payload?.text) + " markdown?=" + (typeof payload?.markdown));
         const textToSend = resolveDeliverText(payload, log);
@@ -1047,6 +1110,10 @@ async function dispatchWithFullPipeline(params: {
     await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
   } finally {
     markDispatchIdle();
+    // Ensure typing indicator is cleaned up even if no reply was sent
+    if (!firstReplyFired && onFirstReply) {
+      await onFirstReply().catch(() => {});
+    }
   }
 
   // 10. Record activity

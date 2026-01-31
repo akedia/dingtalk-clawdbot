@@ -689,3 +689,267 @@ export function textToMarkdownFile(text: string, title?: string): { buffer: Buff
 
   return { buffer, fileName };
 }
+
+// ============================================================================
+// Message Recall (撤回) APIs
+// ============================================================================
+
+/**
+ * Send a DM message and return the processQueryKey for later recall
+ * This is an enhanced version that returns the message ID
+ */
+export async function sendDMMessageWithKey(params: {
+  clientId: string;
+  clientSecret: string;
+  robotCode: string;
+  userId: string;
+  text: string;
+  format?: 'text' | 'markdown';
+}): Promise<{ ok: boolean; processQueryKey?: string; error?: string }> {
+  try {
+    const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
+    const headers = { "x-acs-dingtalk-access-token": token };
+
+    const useMarkdown = params.format !== 'text';
+    const msgKey = useMarkdown ? 'sampleMarkdown' : 'sampleText';
+    const msgParam = useMarkdown
+      ? JSON.stringify({ title: 'AI', text: params.text })
+      : JSON.stringify({ content: params.text });
+
+    const res = await jsonPost(
+      `${DINGTALK_API_BASE}/robot/oToMessages/batchSend`,
+      {
+        robotCode: params.robotCode,
+        userIds: [params.userId],
+        msgKey,
+        msgParam,
+      },
+      headers,
+    );
+
+    if (res?.code || (res?.errcode && res.errcode !== 0)) {
+      console.warn(`[dingtalk] DM send error:`, res);
+      return { ok: false, error: res.message || res.errmsg };
+    }
+
+    return { 
+      ok: true, 
+      processQueryKey: res.processQueryKey 
+    };
+  } catch (err) {
+    console.warn(`[dingtalk] Error sending DM:`, err);
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Send a group message and return the processQueryKey for later recall
+ */
+export async function sendGroupMessageWithKey(params: {
+  clientId: string;
+  clientSecret: string;
+  robotCode: string;
+  conversationId: string;
+  text: string;
+  format?: 'text' | 'markdown';
+}): Promise<{ ok: boolean; processQueryKey?: string; error?: string }> {
+  try {
+    const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
+    const headers = { "x-acs-dingtalk-access-token": token };
+
+    const useMarkdown = params.format !== 'text';
+    const msgKey = useMarkdown ? 'sampleMarkdown' : 'sampleText';
+    const msgParam = useMarkdown
+      ? JSON.stringify({ title: 'AI', text: params.text })
+      : JSON.stringify({ content: params.text });
+
+    const res = await jsonPost(
+      `${DINGTALK_API_BASE}/robot/groupMessages/send`,
+      {
+        robotCode: params.robotCode,
+        openConversationId: params.conversationId,
+        msgKey,
+        msgParam,
+      },
+      headers,
+    );
+
+    if (res?.code || (res?.errcode && res.errcode !== 0)) {
+      console.warn(`[dingtalk] Group send error:`, res);
+      return { ok: false, error: res.message || res.errmsg };
+    }
+
+    return { 
+      ok: true, 
+      processQueryKey: res.processQueryKey 
+    };
+  } catch (err) {
+    console.warn(`[dingtalk] Error sending group message:`, err);
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Recall (撤回) DM messages
+ * Note: This is a "silent recall" - the message just disappears without notification
+ */
+export async function recallDMMessages(params: {
+  clientId: string;
+  clientSecret: string;
+  robotCode: string;
+  userId: string;
+  processQueryKeys: string[];
+}): Promise<{ ok: boolean; successKeys?: string[]; failedKeys?: Record<string, string>; error?: string }> {
+  try {
+    const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
+    const headers = { "x-acs-dingtalk-access-token": token };
+
+    const res = await jsonPost(
+      `${DINGTALK_API_BASE}/robot/otoMessages/batchRecall`,
+      {
+        robotCode: params.robotCode,
+        chatBotUserId: params.userId,
+        processQueryKeys: params.processQueryKeys,
+      },
+      headers,
+    );
+
+    if (res?.code || (res?.errcode && res.errcode !== 0)) {
+      console.warn(`[dingtalk] DM recall error:`, res);
+      return { ok: false, error: res.message || res.errmsg };
+    }
+
+    return { 
+      ok: true, 
+      successKeys: res.successResult,
+      failedKeys: res.failedResult,
+    };
+  } catch (err) {
+    console.warn(`[dingtalk] Error recalling DM:`, err);
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Recall (撤回) group messages
+ */
+export async function recallGroupMessages(params: {
+  clientId: string;
+  clientSecret: string;
+  robotCode: string;
+  conversationId: string;
+  processQueryKeys: string[];
+}): Promise<{ ok: boolean; successKeys?: string[]; failedKeys?: Record<string, string>; error?: string }> {
+  try {
+    const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
+    const headers = { "x-acs-dingtalk-access-token": token };
+
+    const res = await jsonPost(
+      `${DINGTALK_API_BASE}/robot/groupMessages/recall`,
+      {
+        robotCode: params.robotCode,
+        openConversationId: params.conversationId,
+        processQueryKeys: params.processQueryKeys,
+      },
+      headers,
+    );
+
+    if (res?.code || (res?.errcode && res.errcode !== 0)) {
+      console.warn(`[dingtalk] Group recall error:`, res);
+      return { ok: false, error: res.message || res.errmsg };
+    }
+
+    return { 
+      ok: true, 
+      successKeys: res.successResult,
+      failedKeys: res.failedResult,
+    };
+  } catch (err) {
+    console.warn(`[dingtalk] Error recalling group message:`, err);
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Typing indicator helper - sends a "thinking" message that will be recalled
+ * Returns a cleanup function to recall the message
+ */
+export async function sendTypingIndicator(params: {
+  clientId: string;
+  clientSecret: string;
+  robotCode: string;
+  userId?: string;
+  conversationId?: string;
+  message?: string;
+}): Promise<{ cleanup: () => Promise<void>; error?: string }> {
+  const typingMessage = params.message || "⏳ 思考中...";
+  
+  try {
+    if (params.userId) {
+      const result = await sendDMMessageWithKey({
+        clientId: params.clientId,
+        clientSecret: params.clientSecret,
+        robotCode: params.robotCode,
+        userId: params.userId,
+        text: typingMessage,
+        format: 'text',
+      });
+
+      if (!result.ok || !result.processQueryKey) {
+        return { 
+          cleanup: async () => {}, 
+          error: result.error || "Failed to send typing indicator" 
+        };
+      }
+
+      const processQueryKey = result.processQueryKey;
+      return {
+        cleanup: async () => {
+          await recallDMMessages({
+            clientId: params.clientId,
+            clientSecret: params.clientSecret,
+            robotCode: params.robotCode,
+            userId: params.userId!,
+            processQueryKeys: [processQueryKey],
+          });
+        }
+      };
+    }
+
+    if (params.conversationId) {
+      const result = await sendGroupMessageWithKey({
+        clientId: params.clientId,
+        clientSecret: params.clientSecret,
+        robotCode: params.robotCode,
+        conversationId: params.conversationId,
+        text: typingMessage,
+        format: 'text',
+      });
+
+      if (!result.ok || !result.processQueryKey) {
+        return { 
+          cleanup: async () => {}, 
+          error: result.error || "Failed to send typing indicator" 
+        };
+      }
+
+      const processQueryKey = result.processQueryKey;
+      return {
+        cleanup: async () => {
+          await recallGroupMessages({
+            clientId: params.clientId,
+            clientSecret: params.clientSecret,
+            robotCode: params.robotCode,
+            conversationId: params.conversationId!,
+            processQueryKeys: [processQueryKey],
+          });
+        }
+      };
+    }
+
+    return { cleanup: async () => {}, error: "Either userId or conversationId required" };
+  } catch (err) {
+    console.warn(`[dingtalk] Error sending typing indicator:`, err);
+    return { cleanup: async () => {}, error: String(err) };
+  }
+}

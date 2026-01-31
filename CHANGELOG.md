@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-01-31
+
+### 🎉 New Feature: Typing Indicator with Auto-Recall
+
+- **Typing Indicator** — When processing a message, automatically sends "⏳ 思考中..." which is silently recalled when the reply is ready. Much better UX than the old `showThinking` option.
+- **Message Recall APIs** — New functions in `api.ts`:
+  - `sendDMMessageWithKey()` — Send DM and return processQueryKey for recall
+  - `sendGroupMessageWithKey()` — Send group message and return processQueryKey
+  - `recallDMMessages()` — Batch recall DM messages
+  - `recallGroupMessages()` — Batch recall group messages
+  - `sendTypingIndicator()` — One-stop helper that returns a cleanup function
+
+### Configuration
+
+- `typingIndicator: false` — Disable typing indicator (default: enabled)
+- `typingIndicatorMessage: "xxx"` — Customize the thinking message
+
+### Changed
+
+- Deprecated `showThinking` option (still works as fallback if `typingIndicator` is explicitly disabled)
+
 ## [1.4.10] - 2026-01-30
 
 ### Fixed
