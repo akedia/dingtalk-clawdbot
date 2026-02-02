@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.0] - 2026-02-03
+## [1.5.1] - 2026-02-03
+
+### Added
+
+- **OpenClaw compatibility** — added `openclaw.plugin.json` for seamless migration from ClawdBot to OpenClaw
+- Plugin now works with both ClawdBot and OpenClaw without any code changes
+
+### Changed
+
+- Updated package description to mention OpenClaw support
+- Added "openclaw" to keywords
+
+## [1.5.0] - 2026-01-31
 
 ### 🎉 New Feature: Typing Indicator with Auto-Recall
 
@@ -17,11 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `recallGroupMessages()` — Batch recall group messages
   - `sendTypingIndicator()` — One-stop helper that returns a cleanup function
 
-### Added
-
-- **OpenClaw compatibility** — added `openclaw.plugin.json` for seamless migration from ClawdBot to OpenClaw
-- Plugin now works with both ClawdBot and OpenClaw without any code changes
-
 ### Configuration
 
 - `typingIndicator: false` — Disable typing indicator (default: enabled)
@@ -30,8 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Deprecated `showThinking` option (still works as fallback if `typingIndicator` is explicitly disabled)
-- Updated package description to mention OpenClaw support
-- Added "openclaw" to keywords
 
 ## [1.4.10] - 2026-01-30
 
