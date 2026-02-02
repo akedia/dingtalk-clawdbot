@@ -1,6 +1,6 @@
 {
   "name": "@yaoyuanchao/dingtalk",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "type": "module",
   "description": "DingTalk channel plugin for ClawdBot/OpenClaw with Stream Mode support",
   "license": "MIT",
@@ -14,6 +14,31 @@
     "ai-assistant"
   ],
   "clawdbot": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "channel": {
+      "id": "dingtalk",
+      "label": "DingTalk",
+      "selectionLabel": "DingTalk (钉钉)",
+      "detailLabel": "DingTalk Stream Mode",
+      "docsPath": "/channels/dingtalk",
+      "docsLabel": "dingtalk",
+      "blurb": "DingTalk bot via Stream Mode (WebSocket) - No public domain required",
+      "aliases": [
+        "dingding",
+        "dd"
+      ],
+      "order": 75,
+      "quickstartAllowFrom": true
+    },
+    "install": {
+      "npmSpec": "@yaoyuanchao/dingtalk",
+      "localPath": ".",
+      "defaultChoice": "npm"
+    }
+  },
+  "openclaw": {
     "extensions": [
       "./index.ts"
     ],
