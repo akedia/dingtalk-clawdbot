@@ -359,7 +359,7 @@ export const dingtalkPlugin = {
     },
 
     async handleAction(ctx: any) {
-      const { action, params, cfg, accountId } = ctx;
+      const { action, params, cfg, accountId, conversationTarget } = ctx;
 
       // Only handle sendAttachment action
       if (action !== 'sendAttachment') {
@@ -368,10 +368,28 @@ export const dingtalkPlugin = {
 
       const buffer = params?.buffer;
       const filename = params?.filename || 'attachment.bin';
-      const target = params?.target;
 
-      if (!buffer || !target) {
-        return null; // Let SDK handle if missing required params
+      // Accept both 'target' and 'to' parameters (agent may use either)
+      // Also try to infer from conversation context if neither provided
+      let target = params?.target || params?.to;
+
+      // Try to get target from conversation context if not explicitly provided
+      if (!target && conversationTarget) {
+        target = conversationTarget;
+        console.log(`[dingtalk] sendAttachment: inferred target from context: ${target}`);
+      }
+
+      if (!buffer) {
+        console.warn('[dingtalk] sendAttachment: missing buffer parameter');
+        return { ok: false, error: 'Missing buffer parameter. Use base64-encoded file content.' };
+      }
+
+      if (!target) {
+        console.warn('[dingtalk] sendAttachment: missing target/to parameter');
+        return {
+          ok: false,
+          error: 'Missing target parameter. Use "to" or "target" with format: "dm:userId" or "group:conversationId" or just "userId" for DM.'
+        };
       }
 
       const account = resolveDingTalkAccount({ cfg, accountId });
