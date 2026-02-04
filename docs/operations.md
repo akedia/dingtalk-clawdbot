@@ -1,5 +1,63 @@
 # 运维操作手册
 
+## NPM 发布
+
+### 发布前准备
+
+1. **Token 类型**：NPM 现在要求使用 Granular Access Token（90天有效期，需 2FA）
+2. **创建 Token**：https://www.npmjs.com/settings/~/tokens → Generate New Token → Granular Access Token
+3. **权限设置**：选择 `Read and write` 权限，Packages 选择 `@yaoyuanchao/dingtalk`
+
+### 发布步骤
+
+```bash
+# 1. 更新版本号
+# 编辑 package.json 中的 version 字段
+
+# 2. 设置 npm token（token 过期时需要重新设置）
+npm config set //registry.npmjs.org/:_authToken=npm_YOUR_TOKEN_HERE
+
+# 3. 发布
+npm publish --access public
+```
+
+### 常见问题
+
+#### Token 过期（E404 / Not found）
+
+**症状**：
+```
+npm error 404 Not Found - PUT https://registry.npmjs.org/@yaoyuanchao%2fdingtalk
+npm notice Access token expired or revoked
+```
+
+**解决**：重新生成 Granular Token 并设置
+
+#### 需要 OTP（EOTP）
+
+**症状**：
+```
+npm error code EOTP
+npm error This operation requires a one-time password from your authenticator
+```
+
+**解决**：
+- 方法 A：使用 `npm publish --otp=123456`
+- 方法 B：创建"Publish"权限的 Granular Token 时勾选"Require no 2FA for automation"
+
+#### 一键发布 + 部署
+
+```bash
+# 本地发布后，远端升级（OpenClaw）
+npm publish --access public && \
+ssh root@172.20.90.45 "sudo -u clawd \
+  XDG_RUNTIME_DIR=/run/user/1001 \
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
+  bash -c 'openclaw plugins update dingtalk && openclaw gateway restart'"
+```
+
+---
+
 ## 插件更新
 
 ### 官方推荐方法

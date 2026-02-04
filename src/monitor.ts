@@ -144,6 +144,18 @@ async function extractMessageContent(
       return extractPictureContent(msg, log);
     }
 
+    case 'markdown': {
+      // DingTalk markdown messages have content in content.text or content.title
+      const markdownText = content?.text?.trim() || '';
+      const markdownTitle = content?.title?.trim() || '';
+      const text = markdownText || markdownTitle || '[Markdown消息]';
+      log?.info?.("[dingtalk] Markdown message received (" + text.length + " chars)");
+      return {
+        text,
+        messageType: 'markdown',
+      };
+    }
+
     case 'audio': {
       // DingTalk provides speech recognition result in content.recognition
       const recognition = content?.recognition;
