@@ -45,7 +45,7 @@ npm error This operation requires a one-time password from your authenticator
 - 方法 A：使用 `npm publish --otp=123456`
 - 方法 B：创建"Publish"权限的 Granular Token 时勾选"Require no 2FA for automation"
 
-#### 一键发布 + 部署
+#### 一键发布 + 部署（npm 方式，供他人使用）
 
 ```bash
 # 本地发布后，远端升级（OpenClaw）
@@ -55,6 +55,73 @@ ssh root@172.20.90.45 "sudo -u clawd \
   DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
   bash -c 'openclaw plugins update dingtalk && openclaw gateway restart'"
 ```
+
+---
+
+## Git 部署（推荐）
+
+### 为什么用 Git 部署
+
+| 方式 | 适用场景 | 优点 | 缺点 |
+|------|----------|------|------|
+| **Git** | 自己的服务器 | 即时部署、远程 agent 可自行修改代码 | 无版本号管理 |
+| **NPM** | 发布给他人使用 | 版本号清晰、回滚方便 | 需要 token、2FA |
+
+### 首次设置（npm → git 切换）
+
+```bash
+ssh root@172.20.90.45 "sudo -u clawd bash -c '
+  cd /home/clawd/.openclaw/extensions
+  # 备份 npm 版本（可选）
+  [ -d dingtalk ] && mv dingtalk dingtalk.npm-backup
+  # git clone
+  git clone https://github.com/akedia/dingtalk-clawdbot.git dingtalk
+  cd dingtalk && npm install --omit=dev
+'"
+
+# 重启 gateway
+ssh root@172.20.90.45 "sudo -u clawd \
+  XDG_RUNTIME_DIR=/run/user/1001 \
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
+  openclaw gateway restart"
+
+# 验证成功后删除备份
+ssh root@172.20.90.45 "rm -rf /home/clawd/.openclaw/extensions/dingtalk.npm-backup"
+```
+
+### 日常更新（git pull）
+
+```bash
+# 本地：推送到 GitHub
+git push origin master
+
+# 远端：拉取 + 重启
+ssh root@172.20.90.45 "sudo -u clawd bash -c '
+  cd /home/clawd/.openclaw/extensions/dingtalk && git pull
+' && sudo -u clawd \
+  XDG_RUNTIME_DIR=/run/user/1001 \
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
+  openclaw gateway restart"
+```
+
+### 远程 Agent 自行修改代码
+
+Git 部署的优势是远程 agent 可以直接修改代码并提交：
+
+```bash
+# 远程 agent 修改代码后
+cd /home/clawd/.openclaw/extensions/dingtalk
+git add -A && git commit -m "fix: xxx" && git push origin master
+
+# 重启生效
+openclaw gateway restart
+```
+
+### ⚠️ 注意事项
+
+1. **不要混用**：切换到 git 后，不要再用 `openclaw plugins update dingtalk`（会覆盖为 npm 版本）
+2. **备份目录**：切换前如果保留了 `.npm-backup`，记得删除，否则会报重复插件警告
+3. **依赖更新**：如果 package.json 有变化，git pull 后需要 `npm install`
 
 ---
 
