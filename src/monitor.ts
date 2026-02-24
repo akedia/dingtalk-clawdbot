@@ -113,6 +113,17 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   await client.connect();
   log?.info?.("[dingtalk:" + account.accountId + "] Stream connected");
   setStatus?.({ running: true, lastStartAt: Date.now() });
+
+  // Keep this function alive until abort signal fires.
+  // If we return, OpenClaw considers the channel "stopped" and enters auto-restart loop.
+  // The DingTalk SDK's connect() resolves immediately (before WebSocket opens),
+  // so we must hold the Promise pending for the channel's entire lifetime.
+  await new Promise<void>((resolve) => {
+    if (abortSignal?.aborted) return resolve();
+    if (abortSignal) {
+      abortSignal.addEventListener("abort", () => resolve(), { once: true });
+    }
+  });
 }
 
 /**
