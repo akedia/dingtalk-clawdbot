@@ -92,7 +92,7 @@ export const dingTalkConfigSchema = z.object({
     ),
   messageAggregationDelayMs: z.number().int().positive().default(2000).optional()
     .describe('Time window in milliseconds to wait for additional messages (default 2000)'),
-}).strict();
+}).passthrough();
 
 // 导出配置类型
 export type DingTalkConfig = z.infer<typeof dingTalkConfigSchema>;
