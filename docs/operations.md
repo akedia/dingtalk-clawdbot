@@ -427,14 +427,33 @@ ssh root@172.20.90.45 "sudo -u clawd \
 ### 查看 Gateway 日志
 
 ```bash
-# 实时日志（systemd）
-ssh root@172.20.90.45 "sudo -u clawd journalctl --user -u clawdbot-gateway -f"
+# clawd1: 实时日志（systemd）
+ssh root@172.20.90.45 "sudo -u clawd \
+  XDG_RUNTIME_DIR=/run/user/1001 \
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
+  journalctl --user -u openclaw-gateway.service -f"
 
-# 最近 N 条日志
-ssh root@172.20.90.45 "sudo -u clawd journalctl --user -u clawdbot-gateway -n 50 --no-pager"
+# clawd1: 最近 N 条日志
+ssh root@172.20.90.45 "sudo -u clawd \
+  XDG_RUNTIME_DIR=/run/user/1001 \
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
+  journalctl --user -u openclaw-gateway.service -n 50 --no-pager"
 
-# 文件日志
-ssh root@172.20.90.45 "tail -100 /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log"
+# clawd2: 控制台日志
+ssh root@172.20.90.45 "tail -100 /tmp/clawd2-gateway.log"
+
+# clawd2: 详细 JSON 日志（用 Python 格式化）
+ssh root@172.20.90.45 "tail -30 /tmp/openclaw-1002/openclaw-$(date +%Y-%m-%d).log | python3 -c '
+import sys, json
+for line in sys.stdin:
+    try:
+        d = json.loads(line.strip())
+        ts = d.get(\"time\",\"\")[-13:-1]
+        level = d.get(\"_meta\",{}).get(\"logLevelName\",\"\")
+        msg = d.get(\"1\", d.get(\"0\",\"\"))[:300]
+        print(f\"{ts} [{level}] {msg}\")
+    except: pass
+'"
 ```
 
 ### Gateway 状态检查
@@ -443,16 +462,28 @@ ssh root@172.20.90.45 "tail -100 /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log"
 ssh root@172.20.90.45 "sudo -u clawd \
   XDG_RUNTIME_DIR=/run/user/1001 \
   DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
-  clawdbot gateway status"
+  openclaw gateway status"
 ```
 
-### 配置诊断
+### 配置诊断与自动修复
 
 ```bash
-ssh root@172.20.90.45 "sudo -u clawd \
-  XDG_RUNTIME_DIR=/run/user/1001 \
-  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
-  clawdbot doctor"
+# 诊断（不修改）
+ssh root@172.20.90.45 "sudo -u clawd bash -c 'HOME=/home/clawd openclaw doctor'"
+
+# 自动修复（会备份 openclaw.json → openclaw.json.bak）
+ssh root@172.20.90.45 "sudo -u clawd bash -c 'HOME=/home/clawd openclaw doctor --fix'"
+
+# ⚠️ doctor --fix 后检查：可能向 channel 配置注入平台级键
+# 如果插件 Zod schema 用 .strict()，注入的键会导致 channel 启动失败
+# 当前插件已改为 .passthrough() 兼容
+```
+
+### Session 清理（2026.2.23 新增）
+
+```bash
+# 清理孤立 transcript 文件和过期 session
+ssh root@172.20.90.45 "sudo -u clawd bash -c 'HOME=/home/clawd openclaw sessions cleanup'"
 ```
 
 ## 常见运维操作
@@ -460,23 +491,67 @@ ssh root@172.20.90.45 "sudo -u clawd \
 ### 重启 Gateway
 
 ```bash
+# clawd1（systemd）
 ssh root@172.20.90.45 "sudo -u clawd \
   XDG_RUNTIME_DIR=/run/user/1001 \
   DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
-  clawdbot gateway restart"
+  openclaw gateway restart"
+
+# clawd2（nohup，需带代理环境变量）
+ssh root@172.20.90.45 "pkill -9 -u clawd2 -f openclaw && sleep 2 \
+  && rm -f /tmp/clawd2-gateway.log && touch /tmp/clawd2-gateway.log && chown clawd2:clawd2 /tmp/clawd2-gateway.log \
+  && cd /home/clawd2 && sudo -u clawd2 bash -c '
+  HOME=/home/clawd2 PATH=/usr/local/bin:/usr/bin:/bin \
+  HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 \
+  NO_PROXY=localhost,127.0.0.1,172.20.0.0/16,10.0.0.0/8 \
+  nohup openclaw gateway --port 18790 > /tmp/clawd2-gateway.log 2>&1 &'"
 ```
 
 ### 查看已安装插件
 
 ```bash
-ssh root@172.20.90.45 "ls -la /home/clawd/.clawdbot/extensions/"
+ssh root@172.20.90.45 "ls -la /home/clawd/.openclaw/extensions/"
 ```
 
 ### 清理重复插件目录
 
 ```bash
 # 删除 backup 目录
-ssh root@172.20.90.45 "rm -rf /home/clawd/.clawdbot/extensions/dingtalk.backup-*"
+ssh root@172.20.90.45 "rm -rf /home/clawd/.openclaw/extensions/dingtalk.backup-*"
+```
+
+## OpenClaw 升级流程
+
+### 标准升级步骤
+
+```bash
+# 1. 安装新版本
+ssh root@172.20.90.45 "npm install -g openclaw@<version>"
+
+# 2. 配置迁移（会创建 .bak 备份）
+ssh root@172.20.90.45 "sudo -u clawd bash -c 'HOME=/home/clawd openclaw doctor --fix'"
+ssh root@172.20.90.45 "sudo -u clawd2 bash -c 'HOME=/home/clawd2 openclaw doctor --fix'"
+# ⚠️ 检查 doctor 输出：注意 Breaking changes 和注入的配置键
+
+# 3. 检查 systemd entrypoint 是否需要更新
+ssh root@172.20.90.45 "cat /home/clawd/.config/systemd/user/openclaw-gateway.service | grep ExecStart"
+# 对比新版实际路径：ls /usr/lib/node_modules/openclaw/dist/
+
+# 4. 重启 gateway（两个实例）
+
+# 5. 验证所有 channel 连接
+ssh root@172.20.90.45 "sudo -u clawd XDG_RUNTIME_DIR=/run/user/1001 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus journalctl --user -u openclaw-gateway.service --no-pager -n 20 | grep -E 'Stream connected|discord|listening|failed'"
+ssh root@172.20.90.45 "grep -E 'Stream connected|discord|listening|failed' /tmp/clawd2-gateway.log --color=never"
+```
+
+### 回滚
+
+```bash
+# 配置回滚（使用 doctor 创建的备份）
+ssh root@172.20.90.45 "sudo -u clawd bash -c 'cp /home/clawd/.openclaw/openclaw.json.bak /home/clawd/.openclaw/openclaw.json'"
+
+# CLI 版本回滚
+ssh root@172.20.90.45 "npm install -g openclaw@2026.2.23"
 ```
 
 ## 已知问题
