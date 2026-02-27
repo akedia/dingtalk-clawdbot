@@ -1137,14 +1137,15 @@ async function dispatchWithFullPipeline(params: {
     throw err;
   } finally {
     markDispatchIdle();
-    // Only recall typing on dispatch error.
-    // When dispatch succeeds but no reply was sent, message was likely queued by OpenClaw's
-    // collect mode — keep typing indicator visible as user feedback.
-    if (!firstReplyFired && onFirstReply && dispatchError) {
+    if (!firstReplyFired && onFirstReply) {
+      // Always recall typing indicator to avoid orphaned indicators
       await onFirstReply().catch(() => {});
-    }
-    if (!firstReplyFired && !dispatchError) {
-      log?.info?.('[dingtalk] Dispatch completed without reply (message likely queued) — keeping typing indicator');
+      // When dispatch succeeded but no reply was sent, message was likely queued —
+      // send a non-recallable hint so user knows the message was received
+      if (!dispatchError) {
+        log?.info?.('[dingtalk] Dispatch completed without reply (message likely queued) — sending queue hint');
+        await deliverReply(replyTarget, '⏳ 消息已收到，正在排队处理...', log).catch(() => {});
+      }
     }
   }
 
