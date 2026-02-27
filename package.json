@@ -1,6 +1,6 @@
 {
   "name": "@yaoyuanchao/dingtalk",
-  "version": "1.5.6",
+  "version": "1.5.7",
   "type": "module",
   "description": "DingTalk channel plugin for ClawdBot/OpenClaw with Stream Mode support",
   "license": "MIT",

@@ -958,6 +958,10 @@ async function dispatchMessage(params: {
       });
     } else if (runtime?.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
       // Fallback: existing buffered block dispatcher
+      // Per-group system prompt for fallback path
+      const _fallbackGroupsConfig = account?.config?.groups ?? {};
+      const _fallbackGroupSystemPrompt = isGroup ? (_fallbackGroupsConfig?.[conversationId]?.systemPrompt?.trim() || undefined) : undefined;
+
       const ctxPayload = {
         Body: rawBody,
         RawBody: rawBody,
@@ -979,6 +983,7 @@ async function dispatchMessage(params: {
         MediaPath: mediaPath,
         MediaType: mediaType,
         MediaUrl: mediaPath,
+        GroupSystemPrompt: _fallbackGroupSystemPrompt,
       };
 
       // Fire-and-forget: don't await to avoid blocking SDK callback during long agent runs
@@ -1077,6 +1082,12 @@ async function dispatchWithFullPipeline(params: {
 
   // 6. Finalize inbound context (includes media info)
   const to = isDm ? `dingtalk:${senderId}` : `dingtalk:group:${conversationId}`;
+
+  // 6a. Per-group system prompt (read from account.config.groups)
+  const groupsConfig = account?.config?.groups ?? {};
+  const groupOverride = !isDm ? (groupsConfig?.[conversationId] ?? {}) : {};
+  const groupSystemPrompt = !isDm ? (groupOverride?.systemPrompt?.trim() || undefined) : undefined;
+
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: body, RawBody: rawBody, CommandBody: rawBody, From: to, To: to,
     SessionKey: route.sessionKey, AccountId: account.accountId,
@@ -1089,6 +1100,7 @@ async function dispatchWithFullPipeline(params: {
     MediaPath: params.mediaPath, MediaType: params.mediaType, MediaUrl: params.mediaPath,
     CommandAuthorized: true,
     OriginatingChannel: 'dingtalk', OriginatingTo: to,
+    GroupSystemPrompt: groupSystemPrompt,
   });
 
   // 7. Record inbound session

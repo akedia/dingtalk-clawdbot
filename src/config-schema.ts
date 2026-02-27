@@ -84,6 +84,15 @@ export const dingTalkConfigSchema = z.object({
   longTextThreshold: z.number().int().positive().default(8000).optional()
     .describe('Character threshold for longTextMode=file (default 8000)'),
 
+  // 每群聊覆盖配置
+  groups: z.record(z.string(), z.object({
+    systemPrompt: z.string().optional()
+      .describe('Per-group extra system prompt injected as GroupSystemPrompt'),
+    enabled: z.boolean().optional()
+      .describe('Disable this group (false = ignore all messages)'),
+  })).optional().default({})
+    .describe('Per-group overrides keyed by conversationId'),
+
   // 消息聚合
   messageAggregation: z.boolean().default(true)
     .describe(
