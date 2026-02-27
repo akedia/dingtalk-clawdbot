@@ -1129,13 +1129,22 @@ async function dispatchWithFullPipeline(params: {
   });
 
   // 9. Dispatch reply from config
+  let dispatchError = false;
   try {
     await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
+  } catch (err) {
+    dispatchError = true;
+    throw err;
   } finally {
     markDispatchIdle();
-    // Ensure typing indicator is cleaned up even if no reply was sent
-    if (!firstReplyFired && onFirstReply) {
+    // Only recall typing on dispatch error.
+    // When dispatch succeeds but no reply was sent, message was likely queued by OpenClaw's
+    // collect mode — keep typing indicator visible as user feedback.
+    if (!firstReplyFired && onFirstReply && dispatchError) {
       await onFirstReply().catch(() => {});
+    }
+    if (!firstReplyFired && !dispatchError) {
+      log?.info?.('[dingtalk] Dispatch completed without reply (message likely queued) — keeping typing indicator');
     }
   }
 
