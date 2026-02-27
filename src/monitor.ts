@@ -1129,23 +1129,13 @@ async function dispatchWithFullPipeline(params: {
   });
 
   // 9. Dispatch reply from config
-  let dispatchError = false;
   try {
     await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
-  } catch (err) {
-    dispatchError = true;
-    throw err;
   } finally {
     markDispatchIdle();
+    // Recall typing indicator if no reply was sent (queued or error)
     if (!firstReplyFired && onFirstReply) {
-      // Always recall typing indicator to avoid orphaned indicators
       await onFirstReply().catch(() => {});
-      // When dispatch succeeded but no reply was sent, message was likely queued —
-      // send a non-recallable hint so user knows the message was received
-      if (!dispatchError) {
-        log?.info?.('[dingtalk] Dispatch completed without reply (message likely queued) — sending queue hint');
-        await deliverReply(replyTarget, '⏳ 消息已收到，正在排队处理...', log).catch(() => {});
-      }
     }
   }
 
