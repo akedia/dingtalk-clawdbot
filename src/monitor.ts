@@ -1181,6 +1181,39 @@ function resolveDeliverText(payload: any, log?: any): string | undefined {
   return text || undefined;
 }
 
+function buildMarkdownPreviewTitle(text: string, fallback = "Jax"): string {
+  if (!text) return fallback;
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const raw of lines) {
+    // Skip pure image lines
+    if (/^!\[[^\]]*\]\([^\)]+\)$/.test(raw)) continue;
+
+    let title = raw
+      // Strip common markdown prefixes
+      .replace(/^\s*(#{1,6}|>|[-*+]|\d+\.)\s+/, "")
+      // Convert markdown links/images to plain text
+      .replace(/!\[[^\]]*\]\([^\)]+\)/g, "")
+      .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
+      // Remove inline code fences
+      .replace(/`([^`]*)`/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!title) continue;
+
+    // DingTalk conversation list preview is concise; keep title short.
+    if (title.length > 36) title = title.slice(0, 36);
+    return title;
+  }
+
+  return fallback;
+}
+
 async function deliverReply(target: any, text: string, log?: any): Promise<void> {
   const now = Date.now();
   const chunkLimit = target.account.config.textChunkLimit ?? 2000;
@@ -1243,7 +1276,8 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
           log?.info?.("[dingtalk] Sending text (" + chunk.length + " chars): " + chunk.substring(0, 200));
           let sendResult: { ok: boolean; errcode?: number; errmsg?: string };
           if (isMarkdown) {
-            sendResult = await sendMarkdownViaSessionWebhook(target.sessionWebhook, "Reply", chunk);
+            const markdownTitle = buildMarkdownPreviewTitle(chunk, "Jax");
+            sendResult = await sendMarkdownViaSessionWebhook(target.sessionWebhook, markdownTitle, chunk);
           } else {
             sendResult = await sendViaSessionWebhook(target.sessionWebhook, chunk);
           }
