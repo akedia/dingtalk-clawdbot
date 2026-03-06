@@ -116,7 +116,7 @@ export async function getDingTalkAccessToken(clientId: string, clientSecret: str
 export async function sendViaSessionWebhook(
   sessionWebhook: string,
   text: string,
-): Promise<{ ok: boolean; errcode?: number; errmsg?: string }> {
+): Promise<{ ok: boolean; errcode?: number; errmsg?: string; processQueryKey?: string }> {
   const res = await jsonPost(sessionWebhook, {
     msgtype: "text",
     text: { content: text },
@@ -125,7 +125,7 @@ export async function sendViaSessionWebhook(
   if (!ok) {
     console.warn(`[dingtalk] SessionWebhook text error: errcode=${res?.errcode}, errmsg=${res?.errmsg}`);
   }
-  return { ok, errcode: res?.errcode, errmsg: res?.errmsg };
+  return { ok, errcode: res?.errcode, errmsg: res?.errmsg, processQueryKey: res?.processQueryKey || res?.requestId };
 }
 
 /** Send markdown via sessionWebhook */
@@ -133,7 +133,7 @@ export async function sendMarkdownViaSessionWebhook(
   sessionWebhook: string,
   title: string,
   text: string,
-): Promise<{ ok: boolean; errcode?: number; errmsg?: string }> {
+): Promise<{ ok: boolean; errcode?: number; errmsg?: string; processQueryKey?: string }> {
   const res = await jsonPost(sessionWebhook, {
     msgtype: "markdown",
     markdown: { title, text },
@@ -142,7 +142,7 @@ export async function sendMarkdownViaSessionWebhook(
   if (!ok) {
     console.warn(`[dingtalk] SessionWebhook markdown error: errcode=${res?.errcode}, errmsg=${res?.errmsg}`);
   }
-  return { ok, errcode: res?.errcode, errmsg: res?.errmsg };
+  return { ok, errcode: res?.errcode, errmsg: res?.errmsg, processQueryKey: res?.processQueryKey || res?.requestId };
 }
 
 /** Send image via sessionWebhook using markdown format */
@@ -168,7 +168,7 @@ export async function sendDingTalkRestMessage(params: {
   conversationId?: string;
   text: string;
   format?: 'text' | 'markdown';
-}): Promise<{ ok: boolean }> {
+}): Promise<{ ok: boolean; processQueryKey?: string }> {
   const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
   const headers = { "x-acs-dingtalk-access-token": token };
 
@@ -193,7 +193,7 @@ export async function sendDingTalkRestMessage(params: {
     if (res?.errcode && res.errcode !== 0) {
       throw new Error(`DingTalk DM send error: ${JSON.stringify(res)}`);
     }
-    return { ok: !!res?.processQueryKey || !res?.code };
+    return { ok: !!res?.processQueryKey || !res?.code, processQueryKey: res?.processQueryKey || res?.result?.processQueryKey };
   }
 
   if (params.conversationId) {
@@ -210,7 +210,7 @@ export async function sendDingTalkRestMessage(params: {
     if (res?.errcode && res.errcode !== 0) {
       throw new Error(`DingTalk group send error: ${JSON.stringify(res)}`);
     }
-    return { ok: !!res?.processQueryKey || !res?.code };
+    return { ok: !!res?.processQueryKey || !res?.code, processQueryKey: res?.processQueryKey || res?.result?.processQueryKey };
   }
 
   throw new Error("Either userId or conversationId required");
@@ -424,6 +424,7 @@ export async function downloadMediaFile(
   robotCode: string,
   downloadCode: string,
   mediaType?: string,
+  originalFileName?: string,
 ): Promise<{ filePath?: string; mimeType?: string; error?: string }> {
   try {
     const token = await getDingTalkAccessToken(clientId, clientSecret);
@@ -451,17 +452,24 @@ export async function downloadMediaFile(
         fs.mkdirSync(TEMP_DIR, { recursive: true });
       }
 
-      // Determine file extension from content type or media type hint
+      // Determine file extension: prefer original filename, then content type, then media type
       const contentType = response.contentType || '';
-      const ext = MEDIA_EXTENSIONS[contentType]
-        || (mediaType === 'audio' ? '.amr' : undefined)
-        || (mediaType === 'video' ? '.mp4' : undefined)
-        || (mediaType === 'image' ? '.jpg' : undefined)
-        || '.bin';
-
-      const timestamp = Date.now();
-      const prefix = mediaType || 'media';
-      const filename = `${prefix}_${timestamp}${ext}`;
+      let filename: string;
+      if (originalFileName && path.extname(originalFileName)) {
+        // Use original filename with timestamp prefix to avoid collisions
+        const ext = path.extname(originalFileName);
+        const base = path.basename(originalFileName, ext).replace(/[^\w\u4e00-\u9fa5.-]/g, '_').slice(0, 60);
+        filename = `${base}_${Date.now()}${ext}`;
+      } else {
+        const ext = MEDIA_EXTENSIONS[contentType]
+          || (mediaType === 'audio' ? '.amr' : undefined)
+          || (mediaType === 'video' ? '.mp4' : undefined)
+          || (mediaType === 'image' ? '.jpg' : undefined)
+          || (originalFileName ? path.extname(originalFileName) : undefined)
+          || '.bin';
+        const prefix = mediaType || 'media';
+        filename = `${prefix}_${Date.now()}${ext}`;
+      }
       const filePath = path.join(TEMP_DIR, filename);
 
       fs.writeFileSync(filePath, mediaBuffer);

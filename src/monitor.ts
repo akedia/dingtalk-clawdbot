@@ -1,6 +1,94 @@
 import type { DingTalkRobotMessage, ResolvedDingTalkAccount, ExtractedMessage } from "./types.js";
 import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia, uploadMediaFile, sendFileMessage, textToMarkdownFile, sendTypingIndicator } from "./api.js";
 import { getDingTalkRuntime } from "./runtime.js";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+
+// ============================================================================
+// Message Cache - used to resolve quoted message content from originalMsgId
+// DingTalk Stream API does NOT include quoted content in reply callbacks;
+// it only provides originalMsgId. We cache incoming/outgoing messages to look them up.
+// Cache is persisted to disk so it survives gateway restarts.
+// ============================================================================
+
+interface CachedMessage {
+  senderNick: string;
+  text: string;       // human-readable content
+  msgtype: string;
+  ts: number;         // Date.now() at receive time
+}
+
+const MSG_CACHE_MAX = 500;           // max entries to keep
+const MSG_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+const MSG_CACHE_FILE = path.join(os.homedir(), ".openclaw", "extensions", "dingtalk", ".cache", "msg-cache.json");
+
+const msgCache = new Map<string, CachedMessage>();
+
+/** Load persisted cache from disk on startup */
+function loadMsgCache(): void {
+  try {
+    if (fs.existsSync(MSG_CACHE_FILE)) {
+      const raw = fs.readFileSync(MSG_CACHE_FILE, "utf-8");
+      const entries: [string, CachedMessage][] = JSON.parse(raw);
+      const cutoff = Date.now() - MSG_CACHE_TTL_MS;
+      let loaded = 0;
+      for (const [k, v] of entries) {
+        if (v.ts > cutoff) {
+          msgCache.set(k, v);
+          loaded++;
+        }
+      }
+      console.info(`[dingtalk] Loaded ${loaded} entries from msg cache (${MSG_CACHE_FILE})`);
+    }
+  } catch (err) {
+    console.warn(`[dingtalk] Failed to load msg cache: ${err}`);
+  }
+}
+
+/** Persist cache to disk (debounced write) */
+let _saveCacheTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleSaveCache(): void {
+  if (_saveCacheTimer) return;
+  _saveCacheTimer = setTimeout(() => {
+    _saveCacheTimer = null;
+    try {
+      const dir = path.dirname(MSG_CACHE_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const entries = [...msgCache.entries()];
+      fs.writeFileSync(MSG_CACHE_FILE, JSON.stringify(entries), "utf-8");
+    } catch (err) {
+      console.warn(`[dingtalk] Failed to save msg cache: ${err}`);
+    }
+  }, 2000); // debounce 2s
+}
+
+// Load cache on module init
+loadMsgCache();
+
+function msgCacheSet(msgId: string, entry: CachedMessage): void {
+  // Evict expired entries if cache is full
+  if (msgCache.size >= MSG_CACHE_MAX) {
+    const cutoff = Date.now() - MSG_CACHE_TTL_MS;
+    for (const [k, v] of msgCache) {
+      if (v.ts < cutoff) msgCache.delete(k);
+    }
+    // If still full, evict oldest
+    if (msgCache.size >= MSG_CACHE_MAX) {
+      const oldest = [...msgCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+      if (oldest) msgCache.delete(oldest[0]);
+    }
+  }
+  msgCache.set(msgId, entry);
+  scheduleSaveCache();
+}
+
+/** Cache an outbound (bot-sent) message so it can be resolved when quoted */
+export function cacheOutboundMessage(key: string, text: string): void {
+  if (!key || !text) return;
+  msgCacheSet(key, { senderNick: 'Jax', text, msgtype: 'text', ts: Date.now() });
+}
 
 // ============================================================================
 // Message Aggregation Buffer
@@ -455,6 +543,19 @@ async function extractRichTextContent(
         } else if (item.text) {
           // DingTalk sometimes sends richText items as {text: "..."} without msgType wrapper
           parts.push(item.text);
+        } else if (item.msgType === "quote" || item.type === "quote") {
+          // Quoted/referenced message item in richText array (DingTalk v3 quote reply structure)
+          const quotedText = item.content?.text
+            || (typeof item.content === 'string' ? item.content : null)
+            || item.text || '';
+          const quotedSender = item.content?.senderNick || item.senderNick || '';
+          if (quotedText) {
+            const senderPrefix = quotedSender ? `${quotedSender}: ` : '';
+            parts.push(`[引用: "${senderPrefix}${String(quotedText).trim().substring(0, 120)}"]`);
+            log?.info?.("[dingtalk] Extracted quote item from richText array: " + String(quotedText).substring(0, 60));
+          } else {
+            log?.info?.("[dingtalk] Quote item in richText but no text content: " + JSON.stringify(item).substring(0, 200));
+          }
         } else if ((item.msgType === "picture" || item.pictureDownloadCode || item.downloadCode) && (item.downloadCode || item.pictureDownloadCode)) {
           const downloadCode = item.downloadCode || item.pictureDownloadCode;
           try {
@@ -530,15 +631,26 @@ async function processInboundMessage(
   const isDm = msg.conversationType === "1";
   const isGroup = msg.conversationType === "2";
 
-  // Debug: log full message structure for debugging
-  if (msg.msgtype === 'richText' || msg.picture || (msg.atUsers && msg.atUsers.length > 0)) {
-    log?.info?.("[dingtalk-debug] Full message structure:");
-    log?.info?.("[dingtalk-debug]   msgtype: " + msg.msgtype);
-    log?.info?.("[dingtalk-debug]   text: " + JSON.stringify(msg.text));
-    log?.info?.("[dingtalk-debug]   richText: " + JSON.stringify(msg.richText));
-    log?.info?.("[dingtalk-debug]   picture: " + JSON.stringify(msg.picture));
-    log?.info?.("[dingtalk-debug]   atUsers: " + JSON.stringify(msg.atUsers));
-    log?.info?.("[dingtalk-debug]   RAW MESSAGE: " + JSON.stringify(msg).substring(0, 500));
+  // Debug: log full message structure for all inbound messages
+  // Especially important for catching unknown/quote reply structures
+  {
+    const hasQuoteIndicators = (msg.text as any)?.isReplyMsg
+      || !!(msg as any).quoteMsg
+      || !!(msg as any).content?.quote
+      || msg.msgtype === 'richText';
+    if (msg.msgtype === 'richText' || msg.picture || (msg.atUsers && msg.atUsers.length > 0) || hasQuoteIndicators) {
+      log?.info?.("[dingtalk-debug] Full message structure:");
+      log?.info?.("[dingtalk-debug]   msgtype: " + msg.msgtype);
+      log?.info?.("[dingtalk-debug]   text: " + JSON.stringify(msg.text));
+      log?.info?.("[dingtalk-debug]   richText: " + JSON.stringify(msg.richText));
+      log?.info?.("[dingtalk-debug]   picture: " + JSON.stringify(msg.picture));
+      log?.info?.("[dingtalk-debug]   atUsers: " + JSON.stringify(msg.atUsers));
+      log?.info?.("[dingtalk-debug]   RAW MESSAGE: " + JSON.stringify(msg).substring(0, 800));
+    } else {
+      // For regular text messages, still log a condensed version to catch unexpected fields
+      const msgKeys = Object.keys(msg as any).filter(k => !['conversationId','chatbotCorpId','chatbotUserId','msgId','senderNick','isAdmin','senderStaffId','sessionWebhookExpiredTime','createAt','senderCorpId','conversationType','senderId','sessionWebhook','robotCode'].includes(k));
+      log?.info?.("[dingtalk-debug] text msg extra fields: " + JSON.stringify(msgKeys) + " | " + JSON.stringify(msg).substring(0, 400));
+    }
   }
 
   // Extract message content using structured extractor
@@ -562,6 +674,7 @@ async function processInboundMessage(
         robotCode,
         extracted.mediaDownloadCode,
         extracted.mediaType,
+        extracted.mediaFileName,   // preserve original filename for PDFs/Excel/etc
       );
       if (result.filePath) {
         mediaPath = result.filePath;
@@ -586,16 +699,52 @@ async function processInboundMessage(
 
   // If we have media but no text, provide a placeholder
   if (!rawBody && mediaPath) {
-    rawBody = `[${extracted.messageType}] 媒体文件已下载: ${mediaPath}`;
+    const fileLabel = extracted.mediaFileName ? `${extracted.mediaFileName} → ${mediaPath}` : mediaPath;
+    rawBody = `[${extracted.messageType}] 媒体文件已下载: ${fileLabel}`;
+  }
+
+  // Cache this message so quote replies can look it up later via originalMsgId
+  if (msg.msgId && rawBody) {
+    msgCacheSet(msg.msgId, {
+      senderNick: msg.senderNick || '',
+      text: rawBody,
+      msgtype: msg.msgtype,
+      ts: Date.now(),
+    });
   }
 
   // Handle quoted/replied messages: extract the quoted content and prepend it
-  if (msg.text && (msg.text as any).isReplyMsg) {
-    log?.info?.("[dingtalk] Message is a reply, full text object: " + JSON.stringify(msg.text));
+  // DingTalk uses at least three structures across API versions:
+  //   v1 (older): msg.text.isReplyMsg=true + msg.text.repliedMsg
+  //   v2 (stream newer): top-level msg.quoteMsg field
+  //   v3 (richText): richText array with msgType="quote" items (handled in extractRichTextContent)
+  //   v4 (content.quote): msg.content.quote or msg.content.referenceMessage
+  //   v5 (cache lookup): msg.text.isReplyMsg=true + msg.originalMsgId → local cache lookup
+  const topLevelQuoteMsg = (msg as any).quoteMsg;
+  const contentQuote = (msg as any).content?.quote || (msg as any).content?.referenceMessage;
+  const isQuoteReply = (msg.text && (msg.text as any).isReplyMsg) || !!topLevelQuoteMsg || !!contentQuote;
 
-    if ((msg.text as any).repliedMsg) {
+  if (isQuoteReply) {
+    log?.info?.("[dingtalk] Quote reply detected. isReplyMsg=" + !!(msg.text as any)?.isReplyMsg + " | has quoteMsg=" + !!topLevelQuoteMsg + " | has contentQuote=" + !!contentQuote);
+    log?.info?.("[dingtalk] Full message for quote debug: " + JSON.stringify(msg).substring(0, 1500));
+
+    const repliedMsgSource = (msg.text as any)?.repliedMsg || topLevelQuoteMsg || contentQuote;
+
+    // v5: cache lookup via originalMsgId (DingTalk Stream only provides originalMsgId, not content)
+    const originalMsgId = (msg as any).originalMsgId as string | undefined;
+    // v6: cache lookup via originalProcessQueryKey (for bot-sent outbound messages)
+    const originalProcessQueryKey = (msg as any).originalProcessQueryKey as string | undefined;
+    const cachedQuoted = (originalMsgId ? msgCache.get(originalMsgId) : undefined)
+      || (originalProcessQueryKey ? msgCache.get(originalProcessQueryKey) : undefined);
+
+    if (cachedQuoted) {
+      const resolvedBy = (originalMsgId && msgCache.has(originalMsgId)) ? `msgId=${originalMsgId}` : `pqk=${originalProcessQueryKey}`;
+      log?.info?.("[dingtalk] Quote reply resolved from cache (" + resolvedBy + ") sender=" + cachedQuoted.senderNick);
+      const senderTag = cachedQuoted.senderNick ? ` (${cachedQuoted.senderNick})` : '';
+      rawBody = `[引用回复${senderTag}: "${cachedQuoted.text.trim().substring(0, 200)}"]\n${rawBody}`;
+    } else if (repliedMsgSource) {
       try {
-        const repliedMsg = (msg.text as any).repliedMsg;
+        const repliedMsg = repliedMsgSource;
         let quotedContent = "";
 
         // Extract quoted message content
@@ -637,19 +786,35 @@ async function processInboundMessage(
           quotedContent = repliedMsg.content.text;
         } else if (typeof repliedMsg.content === "string") {
           quotedContent = repliedMsg.content;
+        } else if (repliedMsg.text && typeof repliedMsg.text === "string") {
+          // Some DingTalk versions put quoted text directly in .text
+          quotedContent = repliedMsg.text;
+        } else if (repliedMsg.text?.content) {
+          // Or nested under .text.content
+          quotedContent = repliedMsg.text.content;
+        } else if (repliedMsg.body) {
+          // Yet another possible format
+          quotedContent = typeof repliedMsg.body === "string" ? repliedMsg.body : JSON.stringify(repliedMsg.body);
+        } else if (typeof repliedMsg === "string") {
+          // repliedMsgSource itself might be a plain string
+          quotedContent = repliedMsg;
         }
 
+        // Extract sender info if available
+        const quoteSender = repliedMsg.senderNick || repliedMsg.senderName || repliedMsg.content?.senderNick || '';
+
         if (quotedContent) {
-          rawBody = `[引用回复: "${quotedContent.trim()}"]\n${rawBody}`;
+          const senderTag = quoteSender ? ` (${quoteSender})` : '';
+          rawBody = `[引用回复${senderTag}: "${quotedContent.trim()}"]\n${rawBody}`;
           log?.info?.("[dingtalk] Added quoted message: " + quotedContent.slice(0, 50));
         } else {
-          log?.info?.("[dingtalk] Reply message found but no content extracted, repliedMsg: " + JSON.stringify(repliedMsg));
+          log?.warn?.("[dingtalk] Reply message found but no content extracted, repliedMsg keys: " + Object.keys(repliedMsg || {}).join(',') + " | full: " + JSON.stringify(repliedMsg).substring(0, 500));
         }
       } catch (err) {
         log?.info?.("[dingtalk] Failed to extract quoted message: " + err);
       }
     } else {
-      log?.info?.("[dingtalk] Message marked as reply but no repliedMsg field found");
+      log?.info?.("[dingtalk] Quote reply: no inline content and originalMsgId=" + (originalMsgId || 'none') + " not in cache (cache size=" + msgCache.size + "). Full msg: " + JSON.stringify(msg).substring(0, 800));
     }
   }
 
@@ -1141,6 +1306,7 @@ async function dispatchWithFullPipeline(params: {
   });
 
   // 9. Dispatch reply from config
+  const dispatchStartMs = Date.now();
   try {
     await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
   } finally {
@@ -1148,6 +1314,18 @@ async function dispatchWithFullPipeline(params: {
     // Recall typing indicator if no reply was sent (queued or error)
     if (!firstReplyFired && onFirstReply) {
       await onFirstReply().catch(() => {});
+      // Fast-fail detection: if dispatch finished < 2s with no delivery,
+      // it's likely a transient internal error (e.g. session store lock timeout).
+      // Send a visible fallback so the user knows to resend.
+      const elapsedMs = Date.now() - dispatchStartMs;
+      if (elapsedMs < 2000) {
+        log?.warn?.(`[dingtalk] Fast-fail detected: dispatch completed in ${elapsedMs}ms with no delivery`);
+        try {
+          await deliverReply(replyTarget, '⚠️ 消息处理异常，请重发（内部错误，已记录）', log);
+        } catch (notifyErr: any) {
+          log?.warn?.('[dingtalk] Fast-fail notification delivery failed: ' + notifyErr?.message);
+        }
+      }
     }
   }
 
@@ -1274,7 +1452,7 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
         try {
           log?.info?.("[dingtalk] Using sessionWebhook (attempt " + attempt + "/" + maxRetries + "), format=" + messageFormat);
           log?.info?.("[dingtalk] Sending text (" + chunk.length + " chars): " + chunk.substring(0, 200));
-          let sendResult: { ok: boolean; errcode?: number; errmsg?: string };
+          let sendResult: { ok: boolean; errcode?: number; errmsg?: string; processQueryKey?: string };
           if (isMarkdown) {
             const markdownTitle = buildMarkdownPreviewTitle(chunk, "Jax");
             sendResult = await sendMarkdownViaSessionWebhook(target.sessionWebhook, markdownTitle, chunk);
@@ -1284,7 +1462,11 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
           if (!sendResult.ok) {
             throw new Error(`SessionWebhook rejected: errcode=${sendResult.errcode}, errmsg=${sendResult.errmsg}`);
           }
-          log?.info?.("[dingtalk] SessionWebhook send OK (errcode=" + (sendResult.errcode ?? 0) + ")");
+          log?.info?.("[dingtalk] SessionWebhook send OK (errcode=" + (sendResult.errcode ?? 0) + (sendResult.processQueryKey ? ` pqk=${sendResult.processQueryKey}` : '') + ")");
+          // Cache outbound message so it can be resolved when quoted
+          if (sendResult.processQueryKey) {
+            cacheOutboundMessage(sendResult.processQueryKey, chunk);
+          }
           webhookSuccess = true;
           break;
         } catch (err) {
@@ -1303,7 +1485,7 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
         log?.info?.("[dingtalk] SessionWebhook failed after " + maxRetries + " attempts, using REST API fallback");
         // REST API only supports text format
         const textChunk = messageFormat === "markdown" ? chunk : chunk;
-        await sendDingTalkRestMessage({
+        const restResult = await sendDingTalkRestMessage({
           clientId: target.account.clientId,
           clientSecret: target.account.clientSecret,
           robotCode: target.account.robotCode || target.account.clientId,
@@ -1311,7 +1493,11 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
           conversationId: !target.isDm ? target.conversationId : undefined,
           text: textChunk,
         });
-        log?.info?.("[dingtalk] REST API send OK");
+        log?.info?.("[dingtalk] REST API send OK" + (restResult.processQueryKey ? ` pqk=${restResult.processQueryKey}` : ''));
+        // Cache outbound message so it can be resolved when quoted
+        if (restResult.processQueryKey) {
+          cacheOutboundMessage(restResult.processQueryKey, textChunk);
+        }
       } catch (err) {
         log?.info?.("[dingtalk] REST API also failed: " + (err instanceof Error ? err.stack : JSON.stringify(err)));
       }
