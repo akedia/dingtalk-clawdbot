@@ -692,12 +692,26 @@ async function processInboundMessage(
 
   let rawBody = extracted.text;
 
-  if (!rawBody && !mediaPath) {
+  // Check if this might be a quote-only @mention (user quoted a message and @bot with no extra text)
+  // DingTalk strips @mention from text, leaving rawBody empty. We must NOT early-return here
+  // because the quote resolution below will populate rawBody from the cache.
+  const _hasOriginalMsgId = !!(msg as any).originalMsgId || !!(msg as any).originalProcessQueryKey;
+  const _hasTopLevelQuote = !!(msg as any).quoteMsg || !!(msg as any).content?.quote || !!(msg as any).content?.referenceMessage;
+  const _isLikelyQuoteReply = ((msg.text as any)?.isReplyMsg) || _hasTopLevelQuote || _hasOriginalMsgId;
+
+  if (!rawBody && !mediaPath && !_isLikelyQuoteReply) {
     log?.info?.("[dingtalk] Empty message body after all attempts, skipping. msgtype=" + msg.msgtype);
     return;
   }
 
-  // If we have media but no text, provide a placeholder
+  // If rawBody is still empty after quote resolution (e.g. cache miss and no inline quote),
+  // and there's no media, drop the message.
+  if (!rawBody?.trim() && !mediaPath) {
+    log?.info?.("[dingtalk] Empty message body after quote resolution, skipping.");
+    return;
+  }
+
+  // If media present but rawBody still empty, provide placeholder
   if (!rawBody && mediaPath) {
     const fileLabel = extracted.mediaFileName ? `${extracted.mediaFileName} → ${mediaPath}` : mediaPath;
     rawBody = `[${extracted.messageType}] 媒体文件已下载: ${fileLabel}`;
@@ -1433,6 +1447,9 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
     processedText = convertImageUrlsToMarkdown(processedText);
   }
 
+  // Fix DingTalk emoji rendering bug: emojis adjacent to CJK chars swallow neighbors
+  processedText = fixEmojiCjkSpacing(processedText);
+
   const chunks: string[] = [];
   if (processedText.length <= chunkLimit) {
     chunks.push(processedText);
@@ -1559,9 +1576,25 @@ async function sendTextAsFile(target: any, text: string, log?: any): Promise<boo
 }
 
 /**
- * Convert bare image URLs to markdown image syntax
- * Detects patterns like "图1: https://..." or "https://...png" and converts to ![](url)
+ * Fix DingTalk emoji rendering bug: emojis adjacent to CJK characters cause
+ * the renderer to "swallow" neighboring characters (e.g. "商✅化" → eats "业").
+ * Solution: ensure there's a space between emoji and CJK characters.
  */
+function fixEmojiCjkSpacing(text: string): string {
+  // Emoji Unicode ranges (covers most common emoji blocks)
+  const emojiRe = /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/gu;
+  const cjkRe = /[\u4e00-\u9fff\u3400-\u4dbf\uff00-\uffef\u3000-\u303f]/;
+
+  return text.replace(emojiRe, (emoji, _m, offset, str) => {
+    const before = offset > 0 ? str[offset - 1] : '';
+    const after = str[offset + emoji.length] ?? '';
+    const padLeft = cjkRe.test(before) && before !== ' ' ? ' ' : '';
+    const padRight = cjkRe.test(after) && after !== ' ' ? ' ' : '';
+    return padLeft + emoji + padRight;
+  });
+}
+
+
 function convertImageUrlsToMarkdown(text: string): string {
   // Pattern 1: "图X: https://..." format (common Agent output)
   text = text.replace(/图(\d+):\s*(https?:\/\/[^\s]+\.(png|jpg|jpeg|gif|webp)(\?[^\s]*)?)/gi, (match, num, url) => {
