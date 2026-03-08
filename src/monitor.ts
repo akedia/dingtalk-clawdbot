@@ -1320,26 +1320,16 @@ async function dispatchWithFullPipeline(params: {
   });
 
   // 9. Dispatch reply from config
-  const dispatchStartMs = Date.now();
   try {
     await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
   } finally {
     markDispatchIdle();
-    // Recall typing indicator if no reply was sent (queued or error)
+    // Recall typing indicator if no reply was sent (queued or error).
+    // Note: when a message is queued (session has active run), dispatch returns
+    // quickly with no delivery — this is normal, not an error. The queued message
+    // will be processed after the current run completes.
     if (!firstReplyFired && onFirstReply) {
       await onFirstReply().catch(() => {});
-      // Fast-fail detection: if dispatch finished < 2s with no delivery,
-      // it's likely a transient internal error (e.g. session store lock timeout).
-      // Send a visible fallback so the user knows to resend.
-      const elapsedMs = Date.now() - dispatchStartMs;
-      if (elapsedMs < 2000) {
-        log?.warn?.(`[dingtalk] Fast-fail detected: dispatch completed in ${elapsedMs}ms with no delivery`);
-        try {
-          await deliverReply(replyTarget, '⚠️ 消息处理异常，请重发（内部错误，已记录）', log);
-        } catch (notifyErr: any) {
-          log?.warn?.('[dingtalk] Fast-fail notification delivery failed: ' + notifyErr?.message);
-        }
-      }
     }
   }
 
