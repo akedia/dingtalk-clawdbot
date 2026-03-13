@@ -1,6 +1,8 @@
 import type { DingTalkRobotMessage, ResolvedDingTalkAccount, ExtractedMessage } from "./types.js";
 import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia, uploadMediaFile, sendFileMessage, textToMarkdownFile, sendTypingIndicator } from "./api.js";
 import { getDingTalkRuntime } from "./runtime.js";
+import { cacheInboundDownloadCode, getCachedDownloadCode } from "./quoted-msg-cache.js";
+import { resolveQuotedFile } from "./quoted-file-service.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -25,6 +27,15 @@ const MSG_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const MSG_CACHE_FILE = path.join(os.homedir(), ".openclaw", "extensions", "dingtalk", ".cache", "msg-cache.json");
 
 const msgCache = new Map<string, CachedMessage>();
+
+/** Time-indexed outbound message cache for interactiveCard quote resolution.
+ *  Key = send timestamp (ms), value = message text.
+ *  When a quote comes in with msgType=interactiveCard (no content), we look up
+ *  the closest outbound message by repliedMsg.createdAt within OUTBOUND_TIME_WINDOW_MS.
+ */
+const outboundByTime: Array<{ ts: number; text: string }> = [];
+const OUTBOUND_TIME_CACHE_MAX = 100;
+const OUTBOUND_TIME_WINDOW_MS = 10_000; // ±10s tolerance
 
 /** Load persisted cache from disk on startup */
 function loadMsgCache(): void {
@@ -87,7 +98,34 @@ function msgCacheSet(msgId: string, entry: CachedMessage): void {
 /** Cache an outbound (bot-sent) message so it can be resolved when quoted */
 export function cacheOutboundMessage(key: string, text: string): void {
   if (!key || !text) return;
-  msgCacheSet(key, { senderNick: 'Jax', text, msgtype: 'text', ts: Date.now() });
+  const now = Date.now();
+  msgCacheSet(key, { senderNick: 'Jax', text, msgtype: 'text', ts: now });
+  // Also cache by timestamp for interactiveCard quote resolution
+  outboundByTime.push({ ts: now, text });
+  if (outboundByTime.length > OUTBOUND_TIME_CACHE_MAX) outboundByTime.shift();
+}
+
+/** Cache an outbound message by timestamp only (for sessionWebhook sends that return no key) */
+export function cacheOutboundMessageByTime(text: string): void {
+  if (!text) return;
+  outboundByTime.push({ ts: Date.now(), text });
+  if (outboundByTime.length > OUTBOUND_TIME_CACHE_MAX) outboundByTime.shift();
+}
+
+/** Look up an outbound message by DingTalk createdAt timestamp (for interactiveCard quotes) */
+function resolveOutboundByTime(createdAt: number): string | undefined {
+  if (!createdAt || outboundByTime.length === 0) return undefined;
+  // Find the closest entry within the tolerance window
+  let best: { ts: number; text: string } | undefined;
+  let bestDiff = Infinity;
+  for (const entry of outboundByTime) {
+    const diff = Math.abs(entry.ts - createdAt);
+    if (diff < OUTBOUND_TIME_WINDOW_MS && diff < bestDiff) {
+      best = entry;
+      bestDiff = diff;
+    }
+  }
+  return best?.text;
 }
 
 // ============================================================================
@@ -690,6 +728,15 @@ async function processInboundMessage(
     log?.info?.("[dingtalk] Audio ASR text available, skipping .amr download");
   }
 
+  // Cache inbound file/video/audio downloadCode for quoted-message fallback
+  if (extracted.mediaDownloadCode && msg.msgId && msg.conversationId &&
+      (extracted.messageType === 'file' || extracted.messageType === 'video' || extracted.messageType === 'audio')) {
+    cacheInboundDownloadCode(
+      account.accountId, msg.conversationId, msg.msgId,
+      extracted.mediaDownloadCode, extracted.messageType, msg.createAt,
+    );
+  }
+
   let rawBody = extracted.text;
 
   // Check if this might be a quote-only @mention (user quoted a message and @bot with no extra text)
@@ -821,6 +868,116 @@ async function processInboundMessage(
           const senderTag = quoteSender ? ` (${quoteSender})` : '';
           rawBody = `[引用回复${senderTag}: "${quotedContent.trim()}"]\n${rawBody}`;
           log?.info?.("[dingtalk] Added quoted message: " + quotedContent.slice(0, 50));
+        } else if (repliedMsg.msgType === 'interactiveCard' && repliedMsg.createdAt) {
+          // interactiveCard: DingTalk doesn't include content in quote payload.
+          // Try timestamp-based lookup against our outbound message cache.
+          const timeResolved = resolveOutboundByTime(repliedMsg.createdAt);
+          if (timeResolved) {
+            rawBody = `[引用回复 (Jax): "${timeResolved.trim().substring(0, 200)}"]\n${rawBody}`;
+            log?.info?.("[dingtalk] Resolved interactiveCard quote via timestamp (createdAt=" + repliedMsg.createdAt + "): " + timeResolved.slice(0, 50));
+          } else {
+            log?.warn?.("[dingtalk] interactiveCard quote: no timestamp match in outbound cache (createdAt=" + repliedMsg.createdAt + ", cache size=" + outboundByTime.length + ")");
+          }
+        } else if (['file', 'video', 'audio'].includes(repliedMsg.msgType)) {
+          // Quoted file/video/audio message — bot may not have seen the original.
+          // Fallback chain: inline downloadCode → cache → group file API
+          log?.info?.("[dingtalk] Quoted file-type message (msgType=" + repliedMsg.msgType + "), attempting fallback resolution");
+          const quoteSender = repliedMsg.senderNick || repliedMsg.senderName || '';
+          const quoteMsgId = repliedMsg.msgId;
+          let resolvedFile = false;
+
+          // 1. Try inline downloadCode (rare — usually absent when bot didn't see the original)
+          const inlineDownloadCode = repliedMsg.content?.downloadCode || repliedMsg.downloadCode;
+          if (inlineDownloadCode && account.clientId && account.clientSecret) {
+            try {
+              const robotCode = account.robotCode || account.clientId;
+              const dlResult = await downloadMediaFile(
+                account.clientId, account.clientSecret, robotCode,
+                inlineDownloadCode, repliedMsg.msgType,
+                repliedMsg.content?.fileName,
+              );
+              if (dlResult.filePath) {
+                if (!mediaPath) {
+                  mediaPath = dlResult.filePath;
+                  mediaType = dlResult.mimeType || repliedMsg.msgType;
+                }
+                const senderTag = quoteSender ? ` (${quoteSender})` : '';
+                rawBody = `[引用文件${senderTag}: ${dlResult.filePath}]\n${rawBody}`;
+                resolvedFile = true;
+                log?.info?.("[dingtalk] Quoted file resolved via inline downloadCode: " + dlResult.filePath);
+              }
+            } catch (err) {
+              log?.warn?.("[dingtalk] Quoted file inline download failed: " + err);
+            }
+          }
+
+          // 2. Try quoted-msg-cache
+          if (!resolvedFile && quoteMsgId && account.clientId && account.clientSecret) {
+            const cached = getCachedDownloadCode(account.accountId, msg.conversationId, quoteMsgId);
+            if (cached?.downloadCode) {
+              try {
+                const robotCode = account.robotCode || account.clientId;
+                const dlResult = await downloadMediaFile(
+                  account.clientId, account.clientSecret, robotCode,
+                  cached.downloadCode, cached.msgType as any,
+                );
+                if (dlResult.filePath) {
+                  if (!mediaPath) {
+                    mediaPath = dlResult.filePath;
+                    mediaType = dlResult.mimeType || cached.msgType;
+                  }
+                  const senderTag = quoteSender ? ` (${quoteSender})` : '';
+                  rawBody = `[引用文件${senderTag}: ${dlResult.filePath}]\n${rawBody}`;
+                  resolvedFile = true;
+                  log?.info?.("[dingtalk] Quoted file resolved via cache (downloadCode): " + dlResult.filePath);
+                }
+              } catch (err) {
+                log?.warn?.("[dingtalk] Quoted file cache download failed: " + err);
+              }
+            }
+          }
+
+          // 3. Try group file API fallback
+          if (!resolvedFile && account.clientId && account.clientSecret) {
+            try {
+              const fileResult = await resolveQuotedFile(
+                { clientId: account.clientId, clientSecret: account.clientSecret },
+                {
+                  openConversationId: msg.conversationId,
+                  senderStaffId: repliedMsg.senderStaffId || repliedMsg.senderId,
+                  fileCreatedAt: repliedMsg.createdAt || repliedMsg.createAt,
+                },
+                log,
+              );
+              if (fileResult) {
+                if (!mediaPath) {
+                  mediaPath = fileResult.media.path;
+                  mediaType = fileResult.media.mimeType;
+                }
+                const senderTag = quoteSender ? ` (${quoteSender})` : '';
+                const nameLabel = fileResult.name ? ` ${fileResult.name}` : '';
+                rawBody = `[引用文件${senderTag}:${nameLabel} ${fileResult.media.path}]\n${rawBody}`;
+                resolvedFile = true;
+                // Write back to cache for future lookups
+                if (quoteMsgId) {
+                  cacheInboundDownloadCode(
+                    account.accountId, msg.conversationId, quoteMsgId,
+                    undefined, repliedMsg.msgType, repliedMsg.createdAt || repliedMsg.createAt || Date.now(),
+                    { spaceId: fileResult.spaceId, fileId: fileResult.fileId },
+                  );
+                }
+                log?.info?.("[dingtalk] Quoted file resolved via group file API: " + fileResult.media.path);
+              }
+            } catch (err) {
+              log?.warn?.("[dingtalk] Quoted file group API fallback failed: " + err);
+            }
+          }
+
+          if (!resolvedFile) {
+            const senderTag = quoteSender ? ` (${quoteSender})` : '';
+            rawBody = `[引用文件${senderTag}，无法获取内容]\n${rawBody}`;
+            log?.warn?.("[dingtalk] Quoted file could not be resolved, all fallbacks exhausted. msgType=" + repliedMsg.msgType + " msgId=" + (quoteMsgId || 'unknown'));
+          }
         } else {
           log?.warn?.("[dingtalk] Reply message found but no content extracted, repliedMsg keys: " + Object.keys(repliedMsg || {}).join(',') + " | full: " + JSON.stringify(repliedMsg).substring(0, 500));
         }
@@ -1260,7 +1417,7 @@ async function dispatchWithFullPipeline(params: {
   }) ?? rawBody;
 
   // 6. Finalize inbound context (includes media info)
-  const to = isDm ? `dingtalk:${senderId}` : `dingtalk:group:${conversationId}`;
+  const to = isDm ? `dingtalk:dm:${senderId}` : `dingtalk:group:${conversationId}`;
 
   // 6a. Per-group system prompt (read from account.config.groups)
   const groupsConfig = account?.config?.groups ?? {};
@@ -1473,6 +1630,10 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
           // Cache outbound message so it can be resolved when quoted
           if (sendResult.processQueryKey) {
             cacheOutboundMessage(sendResult.processQueryKey, chunk);
+          } else {
+            // sessionWebhook doesn't return processQueryKey — cache by timestamp only
+            // so interactiveCard quotes can resolve via repliedMsg.createdAt
+            cacheOutboundMessageByTime(chunk);
           }
           webhookSuccess = true;
           break;
