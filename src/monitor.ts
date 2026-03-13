@@ -878,8 +878,10 @@ async function processInboundMessage(
           } else {
             log?.warn?.("[dingtalk] interactiveCard quote: no timestamp match in outbound cache (createdAt=" + repliedMsg.createdAt + ", cache size=" + outboundByTime.length + ")");
           }
-        } else if (['file', 'video', 'audio'].includes(repliedMsg.msgType)) {
+        } else if (['file', 'video', 'audio', 'unknownMsgType'].includes(repliedMsg.msgType)) {
           // Quoted file/video/audio message — bot may not have seen the original.
+          // 'unknownMsgType' is returned by DingTalk for files sent via drag-and-drop
+          // (without @bot), so the bot never indexed the original message type.
           // Fallback chain: inline downloadCode → cache → group file API
           log?.info?.("[dingtalk] Quoted file-type message (msgType=" + repliedMsg.msgType + "), attempting fallback resolution");
           const quoteSender = repliedMsg.senderNick || repliedMsg.senderName || '';
