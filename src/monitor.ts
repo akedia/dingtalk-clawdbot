@@ -944,7 +944,9 @@ async function processInboundMessage(
                 { clientId: account.clientId, clientSecret: account.clientSecret },
                 {
                   openConversationId: msg.conversationId,
-                  senderStaffId: repliedMsg.senderStaffId || repliedMsg.senderId,
+                  // repliedMsg often lacks senderStaffId (DingTalk only provides encrypted senderId).
+                  // Fall back to the outer message sender's staffId — any group member works for space query.
+                  senderStaffId: repliedMsg.senderStaffId || msg.senderStaffId,
                   fileCreatedAt: repliedMsg.createdAt || repliedMsg.createAt,
                 },
                 log,
