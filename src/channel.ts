@@ -349,7 +349,12 @@ export const dingtalkPlugin = {
 
   // Handle message actions (sendAttachment, etc.)
   actions: {
-    // List supported actions for this channel - SDK uses this to tell agent what's available
+    // New SDK interface (2026.3.22+): replaces listActions
+    describeMessageTool({ cfg }: { cfg: any }) {
+      return { actions: ['send', 'sendAttachment'] };
+    },
+
+    // Legacy - kept for compatibility
     listActions({ cfg }: { cfg: any }) {
       return ['send', 'sendAttachment'];
     },
