@@ -1623,14 +1623,30 @@ async function dispatchWithFullPipeline(params: {
   let firstReplyFired = false;
 
   // 1. Resolve agent route
+  const peerId = isDm ? senderId : conversationId;
+  const peerKind = isDm ? 'dm' : 'group';
   const route = rt.channel.routing.resolveAgentRoute({
     cfg,
     channel: 'dingtalk',
     accountId: account.accountId,
-    peer: { kind: isDm ? 'dm' : 'group', id: isDm ? senderId : conversationId },
+    peer: { kind: peerKind, id: peerId },
   });
 
-  log?.info?.(`[dingtalk] Route resolved: agentId=${route.agentId} sessionKey=${route.sessionKey} accountId=${account.accountId}`);
+  // Build sessionKey with accountId isolation (like the official plugin's buildAgentSessionKey).
+  // resolveAgentRoute may not include accountId in its sessionKey, causing multi-account
+  // sessions to collide. We use buildAgentSessionKey if available, otherwise construct manually.
+  const buildSessionKey = rt.channel.routing.buildAgentSessionKey;
+  const sessionKey = buildSessionKey
+    ? buildSessionKey({
+        agentId: route.agentId,
+        channel: 'dingtalk',
+        accountId: account.accountId,
+        peer: { kind: peerKind, id: peerId },
+        dmScope: cfg?.session?.dmScope || 'per-channel-peer',
+      })
+    : `agent:${route.agentId}:dingtalk:${account.accountId}:${peerKind}:${peerId}`;
+
+  log?.info?.(`[dingtalk] Route resolved: agentId=${route.agentId} sessionKey=${sessionKey} accountId=${account.accountId}`);
 
   // 2. Resolve store path
   const storePath = rt.channel.session?.resolveStorePath?.(cfg?.session?.store, { agentId: route.agentId });
@@ -1639,7 +1655,7 @@ async function dispatchWithFullPipeline(params: {
   const envelopeOptions = rt.channel.reply?.resolveEnvelopeFormatOptions?.(cfg) ?? {};
 
   // 4. Read previous timestamp for session continuity
-  const previousTimestamp = rt.channel.session?.readSessionUpdatedAt?.({ storePath, sessionKey: route.sessionKey });
+  const previousTimestamp = rt.channel.session?.readSessionUpdatedAt?.({ storePath, sessionKey: sessionKey });
 
   // 5. Format inbound envelope
   const fromLabel = isDm ? `${senderName} (${senderId})` : `${msg.conversationTitle || conversationId} - ${senderName}`;
@@ -1659,7 +1675,7 @@ async function dispatchWithFullPipeline(params: {
 
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: body, RawBody: rawBody, CommandBody: rawBody, From: to, To: to,
-    SessionKey: route.sessionKey, AccountId: account.accountId,
+    SessionKey: sessionKey, AccountId: account.accountId,
     ChatType: isDm ? 'direct' : 'group',
     ConversationLabel: fromLabel,
     GroupSubject: isDm ? undefined : (msg.conversationTitle || conversationId),
@@ -1675,7 +1691,7 @@ async function dispatchWithFullPipeline(params: {
   // 7. Record inbound session
   if (rt.channel.session?.recordInboundSession) {
     await rt.channel.session.recordInboundSession({
-      storePath, sessionKey: ctx.SessionKey || route.sessionKey, ctx,
+      storePath, sessionKey: ctx.SessionKey || sessionKey, ctx,
       updateLastRoute: isDm ? { sessionKey: route.mainSessionKey, channel: 'dingtalk', to: senderId, accountId: account.accountId } : undefined,
     });
   }
