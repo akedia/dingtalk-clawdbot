@@ -1361,13 +1361,25 @@ async function dispatchMessage(params: {
   const queueKey = `${account.accountId}:${conversationId}`;
   const isQueueBusy = sessionQueues.has(queueKey);
 
-  // If queue is busy, notify user that their message is queued
+  // If queue is busy, send a recallable notification so it disappears when processing starts
+  let queueAckCleanup: (() => Promise<void>) | null = null;
   if (isQueueBusy) {
     const phrase = QUEUE_BUSY_PHRASES[Math.floor(Math.random() * QUEUE_BUSY_PHRASES.length)];
     log?.info?.("[dingtalk] Queue busy for " + queueKey + ", notifying user");
     try {
-      if (params.replyTarget.sessionWebhook) {
-        await sendViaSessionWebhook(params.replyTarget.sessionWebhook, phrase);
+      if (account.clientId && account.clientSecret) {
+        const robotCode = account.robotCode || account.clientId;
+        const result = await sendTypingIndicator({
+          clientId: account.clientId,
+          clientSecret: account.clientSecret,
+          robotCode,
+          userId: params.isDm ? params.senderId : undefined,
+          conversationId: !params.isDm ? conversationId : undefined,
+          message: '⏳ ' + phrase,
+        });
+        if (!result.error) {
+          queueAckCleanup = result.cleanup;
+        }
       }
     } catch (_) { /* best-effort notification */ }
   }
@@ -1376,6 +1388,10 @@ async function dispatchMessage(params: {
   const previousTask = sessionQueues.get(queueKey) || Promise.resolve();
   const currentTask = previousTask
     .then(async () => {
+      // Recall queue-busy notification before starting actual processing
+      if (queueAckCleanup) {
+        try { await queueAckCleanup(); log?.info?.("[dingtalk] Queue ack recalled, starting processing"); } catch (_) {}
+      }
       await dispatchMessageInternal(params);
     })
     .catch((err) => {
