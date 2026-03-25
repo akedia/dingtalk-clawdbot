@@ -1648,8 +1648,16 @@ async function dispatchWithFullPipeline(params: {
     matchedAgentId = (cfg as any)?.defaultAgent || 'main';
   }
 
-  // Build sessionKey with accountId for multi-account session isolation
-  const sessionKey = `agent:${matchedAgentId}:dingtalk:${account.accountId}:${peerKind}:${peerId}`;
+  // Use OpenClaw's resolveAgentRoute with our matched agentId to get a valid sessionKey.
+  // Pass accountId-prefixed peerId to ensure session isolation between accounts.
+  const route = rt.channel.routing.resolveAgentRoute({
+    cfg,
+    channel: 'dingtalk',
+    accountId: account.accountId,
+    agentId: matchedAgentId,
+    peer: { kind: peerKind, id: `${account.accountId}:${peerId}` },
+  });
+  const sessionKey = route.sessionKey;
 
   log?.info?.(`[dingtalk] Route resolved: agentId=${matchedAgentId} sessionKey=${sessionKey} accountId=${account.accountId}`);
 
