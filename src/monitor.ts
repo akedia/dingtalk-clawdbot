@@ -331,10 +331,10 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   while (!abortSignal?.aborted) {
     try {
       await client.connect();
-      reconnectAttempt = 0;
-      lastActivityTime = Date.now();
+      const connectTime = Date.now();
+      lastActivityTime = connectTime;
       log?.info?.("[dingtalk:" + account.accountId + "] Stream connected");
-      setStatus?.({ running: true, lastStartAt: Date.now() });
+      setStatus?.({ running: true, lastStartAt: connectTime });
 
       // Start heartbeat monitor: if no activity for 5 minutes, force disconnect to trigger reconnect.
       // The SDK's keepAlive ping/pong (8s interval) handles socket-level liveness and sets
@@ -363,6 +363,13 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
           }, { once: true });
         }
       });
+
+      // Only reset backoff if connection was stable (survived > 30s)
+      // This prevents rapid reconnect loops when connect() succeeds but
+      // the socket drops immediately (e.g. gateway returns unreachable endpoint)
+      if (Date.now() - connectTime > 30_000) {
+        reconnectAttempt = 0;
+      }
     } catch (err) {
       log?.warn?.("[dingtalk] Connection error: " + (err instanceof Error ? err.message : String(err)));
     }
