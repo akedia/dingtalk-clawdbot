@@ -1549,15 +1549,16 @@ async function dispatchMessageInternal(params: {
         GroupSystemPrompt: _fallbackGroupSystemPrompt,
       };
 
-      // Fire-and-forget: don't await to avoid blocking SDK callback during long agent runs
-      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      // Await dispatch so per-session queue waits for reply delivery to complete
+      // before starting the next queued message.
+      await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx: ctxPayload,
         cfg: actualCfg,
         dispatcherOptions: {
           deliver: async (payload: any) => {
             // Recall typing indicator on first delivery
             await cleanupTyping();
-            
+
             log?.info?.("[dingtalk] Deliver payload keys: " + Object.keys(payload || {}).join(',') + " text?=" + (typeof payload?.text) + " markdown?=" + (typeof payload?.markdown));
             const textToSend = resolveDeliverText(payload, log);
             if (textToSend) {
@@ -1573,9 +1574,6 @@ async function dispatchMessageInternal(params: {
             log?.info?.("[dingtalk] Reply error: " + err);
           },
         },
-      }).catch((err) => {
-        cleanupTyping().catch(() => {});
-        log?.info?.("[dingtalk] Dispatch failed: " + err);
       });
 
       // Record activity
