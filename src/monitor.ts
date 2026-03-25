@@ -1630,6 +1630,8 @@ async function dispatchWithFullPipeline(params: {
     peer: { kind: isDm ? 'dm' : 'group', id: isDm ? senderId : conversationId },
   });
 
+  log?.info?.(`[dingtalk] Route resolved: agentId=${route.agentId} sessionKey=${route.sessionKey} accountId=${account.accountId}`);
+
   // 2. Resolve store path
   const storePath = rt.channel.session?.resolveStorePath?.(cfg?.session?.store, { agentId: route.agentId });
 
