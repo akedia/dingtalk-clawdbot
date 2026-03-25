@@ -1632,19 +1632,11 @@ async function dispatchWithFullPipeline(params: {
     peer: { kind: peerKind, id: peerId },
   });
 
-  // Build sessionKey with accountId isolation (like the official plugin's buildAgentSessionKey).
-  // resolveAgentRoute may not include accountId in its sessionKey, causing multi-account
-  // sessions to collide. We use buildAgentSessionKey if available, otherwise construct manually.
-  const buildSessionKey = rt.channel.routing.buildAgentSessionKey;
-  const sessionKey = buildSessionKey
-    ? buildSessionKey({
-        agentId: route.agentId,
-        channel: 'dingtalk',
-        accountId: account.accountId,
-        peer: { kind: peerKind, id: peerId },
-        dmScope: cfg?.session?.dmScope || 'per-channel-peer',
-      })
-    : `agent:${route.agentId}:dingtalk:${account.accountId}:${peerKind}:${peerId}`;
+  // Build sessionKey with accountId for multi-account session isolation.
+  // OpenClaw's resolveAgentRoute and buildAgentSessionKey don't include accountId,
+  // causing sessions to collide when different bot accounts share the same agentId.
+  // We construct the key manually to guarantee isolation.
+  const sessionKey = `agent:${route.agentId}:dingtalk:${account.accountId}:${peerKind}:${peerId}`;
 
   log?.info?.(`[dingtalk] Route resolved: agentId=${route.agentId} sessionKey=${sessionKey} accountId=${account.accountId}`);
 
