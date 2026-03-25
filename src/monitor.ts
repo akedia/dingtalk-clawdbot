@@ -1374,21 +1374,20 @@ async function dispatchMessage(params: {
   const queueKey = `${account.accountId}:${conversationId}`;
   const isQueueBusy = sessionQueues.has(queueKey);
 
-  // If queue is busy, send a recallable notification so it disappears when processing starts
+  // If queue is busy, add emotion reaction on user's message to indicate queued
   let queueAckCleanup: (() => Promise<void>) | null = null;
   if (isQueueBusy) {
-    const phrase = QUEUE_BUSY_PHRASES[Math.floor(Math.random() * QUEUE_BUSY_PHRASES.length)];
-    log?.info?.("[dingtalk] Queue busy for " + queueKey + ", notifying user");
+    log?.info?.("[dingtalk] Queue busy for " + queueKey + ", adding queue reaction");
     try {
-      if (account.clientId && account.clientSecret) {
+      if (account.clientId && account.clientSecret && params.msg.msgId && conversationId) {
         const robotCode = account.robotCode || account.clientId;
-        const result = await sendTypingIndicator({
+        const result = await addEmotionReply({
           clientId: account.clientId,
           clientSecret: account.clientSecret,
           robotCode,
-          userId: params.isDm ? params.senderId : undefined,
-          conversationId: !params.isDm ? conversationId : undefined,
-          message: '⏳ ' + phrase,
+          msgId: params.msg.msgId,
+          conversationId,
+          emotionName: '⏳排队中',
         });
         if (!result.error) {
           queueAckCleanup = result.cleanup;
