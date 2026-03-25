@@ -1536,7 +1536,7 @@ async function dispatchMessageInternal(params: {
         RawBody: rawBody,
         CommandBody: rawBody,
         From: "dingtalk:" + senderId,
-        To: isDm ? ("dingtalk:dm:" + senderId) : ("dingtalk:group:" + conversationId),
+        To: isDm ? ("dingtalk:" + account.accountId + ":dm:" + senderId) : ("dingtalk:" + account.accountId + ":group:" + conversationId),
         SessionKey: sessionKey,
         AccountId: account.accountId,
         ChatType: isDm ? "direct" : "group",
@@ -1648,7 +1648,7 @@ async function dispatchWithFullPipeline(params: {
   }) ?? rawBody;
 
   // 6. Finalize inbound context (includes media info)
-  const to = isDm ? `dingtalk:dm:${senderId}` : `dingtalk:group:${conversationId}`;
+  const to = isDm ? `dingtalk:${account.accountId}:dm:${senderId}` : `dingtalk:${account.accountId}:group:${conversationId}`;
 
   // 6a. Per-group system prompt (read from account.config.groups)
   const groupsConfig = account?.config?.groups ?? {};
