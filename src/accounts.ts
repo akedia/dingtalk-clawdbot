@@ -90,9 +90,17 @@ export function resolveDingTalkAccount(params: {
   }
 
   // Merge: base + account override (deep merge for `dm` object)
+  // Credentials (clientId, clientSecret, robotCode) are per-account and should NOT
+  // inherit from base — otherwise bot A's robotCode leaks into bot B's config.
+  const { clientId: _baseClientId, clientSecret: _baseClientSecret, robotCode: _baseRobotCode, ...baseNonCreds } = baseConfig;
   const merged = {
-    ...baseConfig,
+    ...baseNonCreds,
     ...accountOverride,
+    // Credentials: use account override first, then base, but robotCode only inherits
+    // if clientId also inherits (i.e. they belong to the same bot)
+    clientId: accountOverride.clientId || baseConfig.clientId,
+    clientSecret: accountOverride.clientSecret || baseConfig.clientSecret,
+    robotCode: accountOverride.robotCode || (accountOverride.clientId ? undefined : baseConfig.robotCode),
     // Deep merge dm
     dm: { ...(baseConfig.dm ?? {}), ...(accountOverride.dm ?? {}) },
     // Deep merge groups
