@@ -882,6 +882,73 @@ export async function recallGroupMessages(params: {
  * Typing indicator helper - sends a "thinking" message that will be recalled
  * Returns a cleanup function to recall the message
  */
+// ============================================================================
+// Emotion Reaction API - add/recall emoji reactions on user messages
+// Cleaner UX than typing indicators: reaction floats on the message itself
+// ============================================================================
+
+export async function addEmotionReply(params: {
+  clientId: string;
+  clientSecret: string;
+  robotCode: string;
+  msgId: string;
+  conversationId: string;
+  emotionName?: string;
+}): Promise<{ cleanup: () => Promise<void>; error?: string }> {
+  const emotionName = params.emotionName || '🤔思考中';
+  try {
+    const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
+    const res = await jsonPost(
+      `${DINGTALK_API_BASE}/robot/emotion/reply`,
+      {
+        robotCode: params.robotCode,
+        openMsgId: params.msgId,
+        openConversationId: params.conversationId,
+        emotionType: 2,
+        emotionName,
+        textEmotion: {
+          emotionId: "2659900",
+          emotionName,
+          text: emotionName,
+          backgroundId: "im_bg_1",
+        },
+      },
+      { "x-acs-dingtalk-access-token": token },
+    );
+
+    if (res?.errcode && res.errcode !== 0) {
+      return { cleanup: async () => {}, error: `emotion reply failed: ${res.errmsg || res.errcode}` };
+    }
+
+    return {
+      cleanup: async () => {
+        try {
+          const t = await getDingTalkAccessToken(params.clientId, params.clientSecret);
+          await jsonPost(
+            `${DINGTALK_API_BASE}/robot/emotion/recall`,
+            {
+              robotCode: params.robotCode,
+              openMsgId: params.msgId,
+              openConversationId: params.conversationId,
+              emotionType: 2,
+              emotionName,
+              textEmotion: {
+                emotionId: "2659900",
+                emotionName,
+                text: emotionName,
+                backgroundId: "im_bg_1",
+              },
+            },
+            { "x-acs-dingtalk-access-token": t },
+          );
+        } catch (_) { /* best-effort recall */ }
+      },
+    };
+  } catch (err) {
+    return { cleanup: async () => {}, error: String(err) };
+  }
+}
+
 export async function sendTypingIndicator(params: {
   clientId: string;
   clientSecret: string;

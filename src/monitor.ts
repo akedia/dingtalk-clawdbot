@@ -1,5 +1,5 @@
 import type { DingTalkRobotMessage, ResolvedDingTalkAccount, ExtractedMessage } from "./types.js";
-import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia, uploadMediaFile, sendFileMessage, textToMarkdownFile, sendTypingIndicator } from "./api.js";
+import { sendViaSessionWebhook, sendMarkdownViaSessionWebhook, sendDingTalkRestMessage, batchGetUserInfo, downloadPicture, downloadMediaFile, cleanupOldMedia, uploadMediaFile, sendFileMessage, textToMarkdownFile, sendTypingIndicator, addEmotionReply } from "./api.js";
 import { getDingTalkRuntime } from "./runtime.js";
 import { cacheInboundDownloadCode, getCachedDownloadCode } from "./quoted-msg-cache.js";
 import { resolveQuotedFile } from "./quoted-file-service.js";
@@ -1448,30 +1448,55 @@ async function dispatchMessageInternal(params: {
   // Typing indicator cleanup function (will be called after dispatch completes)
   let typingCleanup: (() => Promise<void>) | null = null;
 
-  // Send typing indicator (recallable) if enabled
-  // This replaces the old showThinking feature with a better UX - the indicator disappears when reply arrives
+  // Send thinking feedback: prefer emotion reaction (clean UX, floats on message),
+  // fall back to typing indicator (separate message) if emotion API fails or msgId unavailable.
   if (account.config.typingIndicator !== false && account.clientId && account.clientSecret) {
-    try {
-      const typingMessage = account.config.typingIndicatorMessage || '⏳ 思考中...';
-      const robotCode = account.robotCode || account.clientId;
-      
-      const result = await sendTypingIndicator({
-        clientId: account.clientId,
-        clientSecret: account.clientSecret,
-        robotCode,
-        userId: isDm ? senderId : undefined,
-        conversationId: !isDm ? conversationId : undefined,
-        message: typingMessage,
-      });
-      
-      if (result.error) {
-        log?.info?.('[dingtalk] Typing indicator failed: ' + result.error);
-      } else {
-        typingCleanup = result.cleanup;
-        log?.info?.('[dingtalk] Typing indicator sent (will be recalled on reply)');
+    const robotCode = account.robotCode || account.clientId;
+    let emotionOk = false;
+
+    // Try emotion reaction first (requires msgId + conversationId)
+    if (msg.msgId && conversationId) {
+      try {
+        const result = await addEmotionReply({
+          clientId: account.clientId,
+          clientSecret: account.clientSecret,
+          robotCode,
+          msgId: msg.msgId,
+          conversationId,
+        });
+        if (!result.error) {
+          typingCleanup = result.cleanup;
+          emotionOk = true;
+          log?.info?.('[dingtalk] Emotion reaction added (will be recalled on reply)');
+        } else {
+          log?.info?.('[dingtalk] Emotion reaction failed: ' + result.error + ', falling back to typing indicator');
+        }
+      } catch (err) {
+        log?.info?.('[dingtalk] Emotion reaction error: ' + err + ', falling back to typing indicator');
       }
-    } catch (err) {
-      log?.info?.('[dingtalk] Typing indicator error: ' + err);
+    }
+
+    // Fallback to typing indicator (separate message)
+    if (!emotionOk) {
+      try {
+        const typingMessage = account.config.typingIndicatorMessage || '⏳ 思考中...';
+        const result = await sendTypingIndicator({
+          clientId: account.clientId,
+          clientSecret: account.clientSecret,
+          robotCode,
+          userId: isDm ? senderId : undefined,
+          conversationId: !isDm ? conversationId : undefined,
+          message: typingMessage,
+        });
+        if (!result.error) {
+          typingCleanup = result.cleanup;
+          log?.info?.('[dingtalk] Typing indicator sent (will be recalled on reply)');
+        } else {
+          log?.info?.('[dingtalk] Typing indicator failed: ' + result.error);
+        }
+      } catch (err) {
+        log?.info?.('[dingtalk] Typing indicator error: ' + err);
+      }
     }
   }
   // Legacy: Send thinking feedback (opt-in, non-recallable) - only if typingIndicator is explicitly disabled
