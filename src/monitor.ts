@@ -248,7 +248,8 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   });
 
   // Reconnection configuration
-  const HEARTBEAT_CHECK_MS = 10_000;     // Check connectivity every 10s
+  const HEARTBEAT_CHECK_MS = 30_000;     // Check connectivity every 30s
+  const HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1000; // 5 min no activity = force reconnect
   const RECONNECT_BASE_MS = 1_000;       // 1s initial backoff
   const RECONNECT_CAP_MS = 30_000;       // 30s max backoff
   let reconnectAttempt = 0;
@@ -303,13 +304,15 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
       log?.info?.("[dingtalk:" + account.accountId + "] Stream connected");
       setStatus?.({ running: true, lastStartAt: Date.now() });
 
-      // Start heartbeat monitor: if no activity for 30s, force disconnect to trigger reconnect.
-      // The SDK's keepAlive ping/pong handles socket-level liveness; this catches higher-level
-      // silent failures where the socket stays open but DingTalk stops sending messages/pongs.
+      // Start heartbeat monitor: if no activity for 5 minutes, force disconnect to trigger reconnect.
+      // The SDK's keepAlive ping/pong (8s interval) handles socket-level liveness and sets
+      // client.connected=false on missed pongs, which our poll loop below detects.
+      // This heartbeat is a secondary safety net for higher-level silent failures where
+      // the socket stays open but DingTalk stops delivering messages.
       heartbeatTimer = setInterval(() => {
         const elapsed = Date.now() - lastActivityTime;
-        if (elapsed > HEARTBEAT_CHECK_MS * 3) { // 30s no activity = dead
-          log?.warn?.("[dingtalk] Heartbeat timeout (" + elapsed + "ms since last activity), forcing reconnect");
+        if (elapsed > HEARTBEAT_TIMEOUT_MS) {
+          log?.warn?.("[dingtalk] Heartbeat timeout (" + Math.round(elapsed / 1000) + "s since last activity), forcing reconnect");
           if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
           try { client.disconnect?.(); } catch {}
         }
