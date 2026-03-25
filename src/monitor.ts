@@ -190,6 +190,32 @@ interface BufferedMessage {
 const messageBuffer = new Map<string, BufferedMessage>();
 const AGGREGATION_DELAY_MS = 2000; // 2 seconds - balance between UX and catching split messages
 
+// ============================================================================
+// Per-Session Message Queue - serializes dispatch to prevent concurrent
+// processing of messages in the same conversation. Uses Promise chaining:
+// each new message's dispatch waits for the previous one to complete.
+// ============================================================================
+
+const sessionQueues = new Map<string, Promise<void>>();
+const sessionQueueLastActivity = new Map<string, number>();
+const SESSION_QUEUE_TTL_MS = 5 * 60 * 1000; // 5 min
+
+const QUEUE_BUSY_PHRASES = [
+  "收到，前面还有消息在处理，稍后按顺序继续。",
+  "当前正在处理中，你的新消息已排队，完成后马上继续。",
+  "我还在处理上一条，这条已记下，稍后继续。",
+];
+
+/** Clean up expired session queues (runs periodically) */
+function cleanupExpiredSessionQueues(): void {
+  const now = Date.now();
+  for (const [key, ts] of sessionQueueLastActivity) {
+    if (now - ts > SESSION_QUEUE_TTL_MS && !sessionQueues.has(key)) {
+      sessionQueueLastActivity.delete(key);
+    }
+  }
+}
+
 function getBufferKey(msg: DingTalkRobotMessage, accountId: string): string {
   return `${accountId}:${msg.conversationId}:${msg.senderId || msg.senderStaffId}`;
 }
@@ -219,10 +245,16 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
     cleanupOldMedia();
   }, 60 * 60 * 1000); // 1 hour
 
+  // Schedule session queue cleanup every 60s
+  const queueCleanupInterval = setInterval(cleanupExpiredSessionQueues, 60_000);
+
   // Clean up on abort (only if abortSignal is provided)
   if (abortSignal) {
     abortSignal.addEventListener('abort', () => {
       clearInterval(cleanupInterval);
+      clearInterval(queueCleanupInterval);
+      sessionQueues.clear();
+      sessionQueueLastActivity.clear();
     });
   }
 
@@ -1308,8 +1340,65 @@ async function flushMessageBuffer(bufferKey: string): Promise<void> {
 
 /**
  * Dispatch a message to the agent (after aggregation or immediately).
+ * Enqueues into per-session queue to prevent concurrent processing.
  */
 async function dispatchMessage(params: {
+  ctx: DingTalkMonitorContext;
+  msg: DingTalkRobotMessage;
+  rawBody: string;
+  replyTarget: any;
+  sessionKey: string;
+  isDm: boolean;
+  senderId: string;
+  senderName: string;
+  conversationId: string;
+  mediaPath?: string;
+  mediaType?: string;
+}): Promise<void> {
+  const { ctx, conversationId } = params;
+  const { account, log } = ctx;
+
+  const queueKey = `${account.accountId}:${conversationId}`;
+  const isQueueBusy = sessionQueues.has(queueKey);
+
+  // If queue is busy, notify user that their message is queued
+  if (isQueueBusy) {
+    const phrase = QUEUE_BUSY_PHRASES[Math.floor(Math.random() * QUEUE_BUSY_PHRASES.length)];
+    log?.info?.("[dingtalk] Queue busy for " + queueKey + ", notifying user");
+    try {
+      if (params.replyTarget.sessionWebhook) {
+        await sendViaSessionWebhook(params.replyTarget.sessionWebhook, phrase);
+      }
+    } catch (_) { /* best-effort notification */ }
+  }
+
+  // Enqueue: chain onto previous task
+  const previousTask = sessionQueues.get(queueKey) || Promise.resolve();
+  const currentTask = previousTask
+    .then(async () => {
+      await dispatchMessageInternal(params);
+    })
+    .catch((err) => {
+      log?.info?.("[dingtalk] Queued dispatch error: " + (err instanceof Error ? err.message : String(err)));
+    })
+    .finally(() => {
+      sessionQueueLastActivity.set(queueKey, Date.now());
+      // Clean up only if this is still the latest task
+      if (sessionQueues.get(queueKey) === currentTask) {
+        sessionQueues.delete(queueKey);
+      }
+    });
+
+  sessionQueues.set(queueKey, currentTask);
+  sessionQueueLastActivity.set(queueKey, Date.now());
+
+  // Don't await — fire-and-forget so message buffering and SDK callback stay responsive
+}
+
+/**
+ * Internal dispatch: actually processes the message (typing indicator, agent call, reply).
+ */
+async function dispatchMessageInternal(params: {
   ctx: DingTalkMonitorContext;
   msg: DingTalkRobotMessage;
   rawBody: string;
