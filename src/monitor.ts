@@ -1526,16 +1526,16 @@ async function dispatchMessageInternal(params: {
     runtime?.channel?.reply?.dispatchReplyFromConfig
   );
 
-  // Track if we've already cleaned up the typing indicator
+  // Track if we've already cleaned up the thinking feedback
   let typingCleaned = false;
   const cleanupTyping = async () => {
     if (typingCleanup && !typingCleaned) {
       typingCleaned = true;
       try {
         await typingCleanup();
-        log?.info?.('[dingtalk] Typing indicator recalled');
+        log?.info?.('[dingtalk] Thinking feedback recalled');
       } catch (err) {
-        log?.info?.('[dingtalk] Failed to recall typing indicator: ' + err);
+        log?.info?.('[dingtalk] Failed to recall thinking feedback: ' + err);
       }
     }
   };
