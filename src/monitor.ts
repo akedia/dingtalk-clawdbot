@@ -253,8 +253,14 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
     abortSignal.addEventListener('abort', () => {
       clearInterval(cleanupInterval);
       clearInterval(queueCleanupInterval);
-      sessionQueues.clear();
-      sessionQueueLastActivity.clear();
+      // Only clear this account's queue entries (other accounts may still be running)
+      const prefix = account.accountId + ':';
+      for (const key of sessionQueues.keys()) {
+        if (key.startsWith(prefix)) sessionQueues.delete(key);
+      }
+      for (const key of sessionQueueLastActivity.keys()) {
+        if (key.startsWith(prefix)) sessionQueueLastActivity.delete(key);
+      }
     });
   }
 

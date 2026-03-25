@@ -72,5 +72,7 @@ export interface DingTalkChannelConfig {
   textChunkLimit?: number;
   messageFormat?: 'text' | 'markdown' | 'richtext' | 'auto';
   showThinking?: boolean;
+  accounts?: Record<string, Partial<DingTalkChannelConfig>>;
+  defaultAccount?: string;
   [key: string]: unknown;
 }

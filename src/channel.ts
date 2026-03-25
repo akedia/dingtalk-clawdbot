@@ -1,5 +1,5 @@
 import { getDingTalkRuntime } from './runtime.js';
-import { resolveDingTalkAccount } from './accounts.js';
+import { resolveDingTalkAccount, listDingTalkAccountIds, resolveDefaultDingTalkAccountId } from './accounts.js';
 import { startDingTalkMonitor } from './monitor.js';
 import { sendDingTalkRestMessage, uploadMediaFile, sendFileMessage, textToMarkdownFile } from './api.js';
 import { probeDingTalk } from './probe.js';
@@ -132,27 +132,35 @@ export const dingtalkPlugin = {
     },
 
     listAccountIds(cfg) {
-      const channel = cfg?.channels?.dingtalk ?? {};
-      if (channel.clientId) return ['default'];
-      return [];
+      return listDingTalkAccountIds(cfg);
     },
 
     resolveAccount(cfg, accountId) {
       return resolveDingTalkAccount({ cfg, accountId });
     },
 
-    defaultAccountId() {
-      return 'default';
+    defaultAccountId(cfg) {
+      return resolveDefaultDingTalkAccountId(cfg);
     },
 
     setAccountEnabled({ cfg, accountId, enabled }) {
       const runtime = getDingTalkRuntime();
-      runtime.config.set('channels.dingtalk.enabled', enabled);
+      const channel = cfg?.channels?.dingtalk;
+      if (channel?.accounts && accountId && accountId !== 'default') {
+        runtime.config.set(`channels.dingtalk.accounts.${accountId}.enabled`, enabled);
+      } else {
+        runtime.config.set('channels.dingtalk.enabled', enabled);
+      }
     },
 
     deleteAccount({ cfg, accountId }) {
       const runtime = getDingTalkRuntime();
-      runtime.config.delete('channels.dingtalk');
+      const channel = cfg?.channels?.dingtalk;
+      if (channel?.accounts && accountId && accountId !== 'default') {
+        runtime.config.delete(`channels.dingtalk.accounts.${accountId}`);
+      } else {
+        runtime.config.delete('channels.dingtalk');
+      }
     },
 
     isConfigured(account) {

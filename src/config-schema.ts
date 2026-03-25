@@ -15,19 +15,20 @@ export const messageFormatSchema = z.enum(['text', 'markdown', 'richtext', 'auto
 
 export const longTextModeSchema = z.enum(['chunk', 'file']);
 
-// DingTalk 配置 Schema
-export const dingTalkConfigSchema = z.object({
-  enabled: z.boolean().default(true).describe('Enable DingTalk channel'),
+// Per-account config schema (everything that can be overridden per account)
+export const dingTalkAccountConfigSchema = z.object({
+  enabled: z.boolean().default(true).describe('Enable this account'),
+  name: z.string().optional().describe('Display name for this account'),
 
-  // 凭证配置（必需）
-  clientId: z.string().min(1, 'Client ID (AppKey) is required')
+  // Credentials
+  clientId: z.string().optional()
     .describe('DingTalk application AppKey'),
-  clientSecret: z.string().min(1, 'Client Secret (AppSecret) is required')
+  clientSecret: z.string().optional()
     .describe('DingTalk application AppSecret'),
   robotCode: z.string().optional()
     .describe('Robot code (optional, defaults to clientId if not provided)'),
 
-  // 私聊配置
+  // DM config
   dm: z.object({
     enabled: z.boolean().default(true)
       .describe('Enable direct messages'),
@@ -43,7 +44,7 @@ export const dingTalkConfigSchema = z.object({
       .describe('Allowed staff IDs (for pairing/allowlist policy)'),
   }).default({}),
 
-  // 群聊配置
+  // Group config
   groupPolicy: groupPolicySchema.default('allowlist')
     .describe(
       'Group chat policy:\n' +
@@ -56,7 +57,7 @@ export const dingTalkConfigSchema = z.object({
   requireMention: z.boolean().default(true)
     .describe('Require @ mention in group chats'),
 
-  // 消息格式
+  // Message format
   messageFormat: messageFormatSchema.default('text')
     .describe(
       'Message format:\n' +
@@ -66,15 +67,14 @@ export const dingTalkConfigSchema = z.object({
       '  - auto: Auto-detect markdown features in response'
     ),
 
-  // 思考反馈
+  // Thinking feedback
   showThinking: z.boolean().default(false)
     .describe('Send "正在思考..." feedback before AI responds'),
 
-  // 高级配置（可选）
+  // Advanced
   textChunkLimit: z.number().int().positive().default(2000).optional()
     .describe('Text chunk size limit for long messages'),
 
-  // 长文本处理
   longTextMode: longTextModeSchema.default('chunk')
     .describe(
       'How to handle long text messages:\n' +
@@ -84,7 +84,7 @@ export const dingTalkConfigSchema = z.object({
   longTextThreshold: z.number().int().positive().default(8000).optional()
     .describe('Character threshold for longTextMode=file (default 8000)'),
 
-  // 每群聊覆盖配置
+  // Per-group overrides
   groups: z.record(z.string(), z.object({
     systemPrompt: z.string().optional()
       .describe('Per-group extra system prompt injected as GroupSystemPrompt'),
@@ -93,7 +93,7 @@ export const dingTalkConfigSchema = z.object({
   })).optional().default({})
     .describe('Per-group overrides keyed by conversationId'),
 
-  // 消息聚合
+  // Message aggregation
   messageAggregation: z.boolean().default(true)
     .describe(
       'Aggregate messages from the same sender within a short time window.\n' +
@@ -103,7 +103,16 @@ export const dingTalkConfigSchema = z.object({
     .describe('Time window in milliseconds to wait for additional messages (default 2000)'),
 }).passthrough();
 
+// Top-level DingTalk config: account config + multi-account support
+export const dingTalkConfigSchema = dingTalkAccountConfigSchema.extend({
+  accounts: z.record(z.string(), dingTalkAccountConfigSchema.partial().optional()).optional()
+    .describe('Named accounts that override top-level settings'),
+  defaultAccount: z.string().optional()
+    .describe('Default account ID (if accounts are defined)'),
+});
+
 // 导出配置类型
+export type DingTalkAccountConfig = z.infer<typeof dingTalkAccountConfigSchema>;
 export type DingTalkConfig = z.infer<typeof dingTalkConfigSchema>;
 
 /**
@@ -125,6 +134,13 @@ export function validateDingTalkConfig(config: unknown): DingTalkConfig {
     }
     throw error;
   }
+}
+
+/**
+ * Validate per-account config (partial, used for account overrides)
+ */
+export function validateDingTalkAccountConfig(config: unknown): DingTalkAccountConfig {
+  return dingTalkAccountConfigSchema.parse(config);
 }
 
 /**
