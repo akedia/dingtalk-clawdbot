@@ -281,7 +281,7 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   const client = new DWClient({
     clientId: account.clientId,
     clientSecret: account.clientSecret,
-    keepAlive: true,       // Enable SDK ping/pong for socket-level liveness
+    keepAlive: false,      // Disabled: SDK's 8s ping/pong terminates on unreachable gateway endpoints
     autoReconnect: false,  // We manage reconnection with exponential backoff
   });
 
