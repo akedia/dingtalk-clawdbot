@@ -8,6 +8,45 @@ import * as path from "path";
 import * as os from "os";
 
 // ============================================================================
+// Message Deduplication - prevent duplicate processing after Stream reconnect.
+// DingTalk re-delivers messages that weren't ACK'd before disconnect using the
+// same protocol messageId, so we track recently processed IDs.
+// ============================================================================
+
+const DEDUP_MAX_SIZE = 1000;
+const DEDUP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+const processedMessageIds = new Map<string, number>(); // messageId → timestamp
+
+function isDuplicateMessage(messageId: string): boolean {
+  if (!messageId) return false;
+  return processedMessageIds.has(messageId);
+}
+
+function markMessageProcessed(messageId: string): void {
+  if (!messageId) return;
+  processedMessageIds.set(messageId, Date.now());
+
+  // Evict expired entries when cache exceeds max size
+  if (processedMessageIds.size > DEDUP_MAX_SIZE) {
+    const cutoff = Date.now() - DEDUP_TTL_MS;
+    for (const [id, ts] of processedMessageIds) {
+      if (ts < cutoff) processedMessageIds.delete(id);
+    }
+    // If still over limit after TTL eviction, drop oldest
+    if (processedMessageIds.size > DEDUP_MAX_SIZE) {
+      const overflow = processedMessageIds.size - DEDUP_MAX_SIZE;
+      let removed = 0;
+      for (const id of processedMessageIds.keys()) {
+        if (removed >= overflow) break;
+        processedMessageIds.delete(id);
+        removed++;
+      }
+    }
+  }
+}
+
+// ============================================================================
 // Message Cache - used to resolve quoted message content from originalMsgId
 // DingTalk Stream API does NOT include quoted content in reply callbacks;
 // it only provides originalMsgId. We cache incoming/outgoing messages to look them up.
@@ -204,14 +243,37 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   const client = new DWClient({
     clientId: account.clientId,
     clientSecret: account.clientSecret,
+    keepAlive: true,       // Enable SDK ping/pong for socket-level liveness
+    autoReconnect: false,  // We manage reconnection with exponential backoff
   });
 
+  // Reconnection configuration
+  const HEARTBEAT_CHECK_MS = 10_000;     // Check connectivity every 10s
+  const RECONNECT_BASE_MS = 1_000;       // 1s initial backoff
+  const RECONNECT_CAP_MS = 30_000;       // 30s max backoff
+  let reconnectAttempt = 0;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let lastActivityTime = Date.now();
+
+  // Track message activity to extend heartbeat window
+  const touchActivity = () => { lastActivityTime = Date.now(); };
+
   client.registerCallbackListener(TOPIC_ROBOT, async (downstream: any) => {
+    const protocolMsgId = downstream.headers?.messageId;
+
     // Immediately ACK to prevent DingTalk from retrying (60s timeout)
-    // SDK method is socketCallBackResponse, not socketResponse
     try {
-      client.socketCallBackResponse(downstream.headers.messageId, { status: 'SUCCESS' });
+      client.socketCallBackResponse(protocolMsgId, { status: 'SUCCESS' });
     } catch (_) { /* best-effort ACK */ }
+
+    touchActivity(); // Track message activity for heartbeat
+
+    // Deduplication: skip messages already processed (e.g. re-delivered after reconnect)
+    if (isDuplicateMessage(protocolMsgId)) {
+      log?.info?.("[dingtalk] Duplicate message skipped: " + protocolMsgId);
+      return { status: "SUCCESS", message: "OK" };
+    }
+    markMessageProcessed(protocolMsgId);
 
     try {
       const data: DingTalkRobotMessage = typeof downstream.data === "string"
@@ -228,28 +290,74 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
     return { status: "SUCCESS", message: "OK" };
   });
 
-  const onAbort = () => {
-    try { client.disconnect?.(); } catch {}
-    setStatus?.({ running: false, lastStopAt: Date.now() });
-  };
-  if (abortSignal) {
-    abortSignal.addEventListener("abort", onAbort, { once: true });
+  // ============================================================================
+  // Connection loop with custom heartbeat + exponential backoff reconnection.
+  // Keeps this function alive until abort signal fires.
+  // If we return, OpenClaw considers the channel "stopped" and enters auto-restart loop.
+  // ============================================================================
+  while (!abortSignal?.aborted) {
+    try {
+      await client.connect();
+      reconnectAttempt = 0;
+      lastActivityTime = Date.now();
+      log?.info?.("[dingtalk:" + account.accountId + "] Stream connected");
+      setStatus?.({ running: true, lastStartAt: Date.now() });
+
+      // Start heartbeat monitor: if no activity for 30s, force disconnect to trigger reconnect.
+      // The SDK's keepAlive ping/pong handles socket-level liveness; this catches higher-level
+      // silent failures where the socket stays open but DingTalk stops sending messages/pongs.
+      heartbeatTimer = setInterval(() => {
+        const elapsed = Date.now() - lastActivityTime;
+        if (elapsed > HEARTBEAT_CHECK_MS * 3) { // 30s no activity = dead
+          log?.warn?.("[dingtalk] Heartbeat timeout (" + elapsed + "ms since last activity), forcing reconnect");
+          if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+          try { client.disconnect?.(); } catch {}
+        }
+      }, HEARTBEAT_CHECK_MS);
+
+      // Wait for disconnect or abort
+      await new Promise<void>((resolve) => {
+        // Poll client.connected (SDK sets false on socket close / system disconnect)
+        const pollTimer = setInterval(() => {
+          if (!client.connected) { clearInterval(pollTimer); resolve(); }
+        }, 1000);
+        if (abortSignal) {
+          abortSignal.addEventListener("abort", () => {
+            clearInterval(pollTimer);
+            resolve();
+          }, { once: true });
+        }
+      });
+    } catch (err) {
+      log?.warn?.("[dingtalk] Connection error: " + (err instanceof Error ? err.message : String(err)));
+    }
+
+    // Clean up heartbeat
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+
+    if (abortSignal?.aborted) break; // Clean shutdown
+
+    setStatus?.({ running: false });
+
+    // Exponential backoff with jitter
+    reconnectAttempt++;
+    const backoff = Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempt - 1), RECONNECT_CAP_MS);
+    const jitter = Math.random() * backoff * 0.3;
+    const delay = Math.round(backoff + jitter);
+    log?.info?.("[dingtalk] Reconnect attempt " + reconnectAttempt + " in " + delay + "ms");
+
+    // Sleep with abort-awareness
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, delay);
+      if (abortSignal) {
+        abortSignal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+      }
+    });
   }
 
-  await client.connect();
-  log?.info?.("[dingtalk:" + account.accountId + "] Stream connected");
-  setStatus?.({ running: true, lastStartAt: Date.now() });
-
-  // Keep this function alive until abort signal fires.
-  // If we return, OpenClaw considers the channel "stopped" and enters auto-restart loop.
-  // The DingTalk SDK's connect() resolves immediately (before WebSocket opens),
-  // so we must hold the Promise pending for the channel's entire lifetime.
-  await new Promise<void>((resolve) => {
-    if (abortSignal?.aborted) return resolve();
-    if (abortSignal) {
-      abortSignal.addEventListener("abort", () => resolve(), { once: true });
-    }
-  });
+  // Final cleanup
+  try { client.disconnect?.(); } catch {}
+  setStatus?.({ running: false, lastStopAt: Date.now() });
 }
 
 /**
@@ -1614,8 +1722,8 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
     let webhookSuccess = false;
     const maxRetries = 2;
 
-    // Try sessionWebhook with retry
-    if (target.sessionWebhook && now < target.sessionWebhookExpiry) {
+    // Try sessionWebhook with retry (60s safety buffer before expiry)
+    if (target.sessionWebhook && now < (target.sessionWebhookExpiry - 60_000)) {
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           log?.info?.("[dingtalk] Using sessionWebhook (attempt " + attempt + "/" + maxRetries + "), format=" + messageFormat);
@@ -1642,9 +1750,14 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
           webhookSuccess = true;
           break;
         } catch (err) {
-          log?.info?.("[dingtalk] SessionWebhook attempt " + attempt + " failed: " + (err instanceof Error ? err.message : String(err)));
+          const errMsg = err instanceof Error ? err.message : String(err);
+          log?.info?.("[dingtalk] SessionWebhook attempt " + attempt + " failed: " + errMsg);
+          // If webhook is definitively expired/invalid, skip remaining retries
+          if (errMsg.includes('880001') || errMsg.includes('invalid session') || errMsg.includes('expired') || errMsg.includes('token is not exist')) {
+            log?.info?.("[dingtalk] SessionWebhook expired/invalid, falling through to REST API");
+            break;
+          }
           if (attempt < maxRetries) {
-            // Wait 1 second before retry
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
         }
@@ -1654,16 +1767,15 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
     // Fallback to REST API if webhook failed after all retries
     if (!webhookSuccess && target.account.clientId && target.account.clientSecret) {
       try {
-        log?.info?.("[dingtalk] SessionWebhook failed after " + maxRetries + " attempts, using REST API fallback");
-        // REST API only supports text format
-        const textChunk = messageFormat === "markdown" ? chunk : chunk;
+        log?.info?.("[dingtalk] SessionWebhook unavailable, using REST API fallback");
         const restResult = await sendDingTalkRestMessage({
           clientId: target.account.clientId,
           clientSecret: target.account.clientSecret,
           robotCode: target.account.robotCode || target.account.clientId,
           userId: target.isDm ? target.senderId : undefined,
           conversationId: !target.isDm ? target.conversationId : undefined,
-          text: textChunk,
+          text: chunk,
+          format: isMarkdown ? 'markdown' : 'text',
         });
         log?.info?.("[dingtalk] REST API send OK" + (restResult.processQueryKey ? ` pqk=${restResult.processQueryKey}` : ''));
         // Cache outbound message so it can be resolved when quoted
