@@ -1622,26 +1622,39 @@ async function dispatchWithFullPipeline(params: {
   
   let firstReplyFired = false;
 
-  // 1. Resolve agent route
+  // 1. Resolve agent route via own bindings matching (like official plugin).
+  // OpenClaw's resolveAgentRoute doesn't handle accountId correctly for multi-account.
   const peerId = isDm ? senderId : conversationId;
   const peerKind = isDm ? 'dm' : 'group';
-  const route = rt.channel.routing.resolveAgentRoute({
-    cfg,
-    channel: 'dingtalk',
-    accountId: account.accountId,
-    peer: { kind: peerKind, id: peerId },
-  });
+  const chatType = isDm ? 'direct' : 'group';
 
-  // Build sessionKey with accountId for multi-account session isolation.
-  // OpenClaw's resolveAgentRoute and buildAgentSessionKey don't include accountId,
-  // causing sessions to collide when different bot accounts share the same agentId.
-  // We construct the key manually to guarantee isolation.
-  const sessionKey = `agent:${route.agentId}:dingtalk:${account.accountId}:${peerKind}:${peerId}`;
+  let matchedAgentId: string | null = null;
+  const bindings = (cfg as any)?.bindings;
+  if (Array.isArray(bindings) && bindings.length > 0) {
+    for (const binding of bindings) {
+      const match = binding.match;
+      if (!match) continue;
+      if (match.channel && match.channel !== 'dingtalk') continue;
+      if (match.accountId && match.accountId !== account.accountId) continue;
+      if (match.peer) {
+        if (match.peer.kind && match.peer.kind !== chatType) continue;
+        if (match.peer.id && match.peer.id !== '*' && match.peer.id !== peerId) continue;
+      }
+      matchedAgentId = binding.agentId;
+      break;
+    }
+  }
+  if (!matchedAgentId) {
+    matchedAgentId = (cfg as any)?.defaultAgent || 'main';
+  }
 
-  log?.info?.(`[dingtalk] Route resolved: agentId=${route.agentId} sessionKey=${sessionKey} accountId=${account.accountId}`);
+  // Build sessionKey with accountId for multi-account session isolation
+  const sessionKey = `agent:${matchedAgentId}:dingtalk:${account.accountId}:${peerKind}:${peerId}`;
+
+  log?.info?.(`[dingtalk] Route resolved: agentId=${matchedAgentId} sessionKey=${sessionKey} accountId=${account.accountId}`);
 
   // 2. Resolve store path
-  const storePath = rt.channel.session?.resolveStorePath?.(cfg?.session?.store, { agentId: route.agentId });
+  const storePath = rt.channel.session?.resolveStorePath?.(cfg?.session?.store, { agentId: matchedAgentId });
 
   // 3. Get envelope format options
   const envelopeOptions = rt.channel.reply?.resolveEnvelopeFormatOptions?.(cfg) ?? {};
