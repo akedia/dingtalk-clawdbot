@@ -61,6 +61,9 @@ clawdbot gateway
 | `messageFormat` | 消息格式: `text`/`markdown`/`auto` | `auto` |
 | `typingIndicator` | 显示"思考中"提示 | `true` |
 | `longTextMode` | 长文本处理: `chunk`/`file` | `chunk` |
+| `groups.<id>.systemPrompt` | 指定群的额外 system prompt | - |
+| `groups.<id>.enabled` | 是否启用该群（false = 完全忽略） | `true` |
+| `groups.<id>.allowFrom` | 该群只响应这些 staffId 的消息（支持 `"*"` 通配符） | `[]`（不限制） |
 
 </details>
 
@@ -79,6 +82,32 @@ clawdbot gateway
 Access denied. Your staffId: 050914XXXXXXXXX
 ```
 把这个 ID 加到 `dm.allowFrom` 里，重启 gateway 即可。
+
+## 🔒 群聊发言人限制（Per-group allowFrom）
+
+可以让机器人在某个群里**只响应指定用户**的 @ 消息，其他人 @ 会被静默忽略。
+
+```json
+{
+  "channels": {
+    "dingtalk": {
+      "groups": {
+        "<conversationId>": {
+          "allowFrom": ["050914185922786044"]
+        }
+      }
+    }
+  }
+}
+```
+
+**获取 conversationId：** 机器人收到群消息时日志里会打印，或通过钉钉开放平台 API 查询。
+
+**支持通配符：** `"allowFrom": ["*"]` 表示允许所有人（等同于不设置）。
+
+**与 `dm.allowFrom` 的区别：**
+- `dm.allowFrom` — 私聊白名单（全局）
+- `groups.<id>.allowFrom` — 指定群的发言人白名单（per-group）
 
 ## 📝 更新日志
 

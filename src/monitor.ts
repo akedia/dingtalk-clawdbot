@@ -1231,6 +1231,17 @@ async function processInboundMessage(
     // Check @mention requirement
     const requireMention = account.config.requireMention !== false;
     if (requireMention && !msg.isInAtList) return;
+
+    // Check per-group sender allowlist
+    const groupConfig = (account.config.groups ?? {})[conversationId];
+    const groupAllowFrom = groupConfig?.allowFrom;
+    if (groupAllowFrom && groupAllowFrom.length > 0) {
+      log?.info?.("[dingtalk] Group allowFrom check: senderId=" + senderId + " allowFrom=" + JSON.stringify(groupAllowFrom));
+      if (!isSenderAllowed(senderId, groupAllowFrom)) {
+        log?.info?.("[dingtalk] Group sender not in allowFrom: " + senderId + " for group " + conversationId);
+        return;
+      }
+    }
   }
 
   const sessionKey = "dingtalk:" + account.accountId + ":" + (isDm ? "dm" : "group") + ":" + conversationId;

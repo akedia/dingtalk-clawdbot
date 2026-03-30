@@ -90,6 +90,8 @@ export const dingTalkAccountConfigSchema = z.object({
       .describe('Per-group extra system prompt injected as GroupSystemPrompt'),
     enabled: z.boolean().optional()
       .describe('Disable this group (false = ignore all messages)'),
+    allowFrom: z.array(z.string()).optional()
+      .describe('Only respond to messages from these senderStaffIds in this group (supports "*" wildcard). If omitted, all senders are allowed.'),
   })).optional().default({})
     .describe('Per-group overrides keyed by conversationId'),
 
