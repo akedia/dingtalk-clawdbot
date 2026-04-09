@@ -308,8 +308,11 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
     touchActivity(); // Track message activity for heartbeat
 
     // Deduplication: skip messages already processed (e.g. re-delivered after reconnect)
+    // Check both protocol-level messageId AND business-level msgId, because
+    // DingTalk re-delivers with a NEW protocol messageId after reconnect but
+    // the same business msgId.
     if (isDuplicateMessage(protocolMsgId)) {
-      log?.info?.("[dingtalk] Duplicate message skipped: " + protocolMsgId);
+      log?.info?.("[dingtalk] Duplicate message skipped (protocol): " + protocolMsgId);
       return { status: "SUCCESS", message: "OK" };
     }
     markMessageProcessed(protocolMsgId);
@@ -317,6 +320,15 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
     try {
       const data: DingTalkRobotMessage = typeof downstream.data === "string"
         ? JSON.parse(downstream.data) : downstream.data;
+
+      // Business-level dedup: same msgId re-delivered with different protocol ID
+      const bizMsgId = data.msgId;
+      if (bizMsgId && isDuplicateMessage('biz:' + bizMsgId)) {
+        log?.info?.("[dingtalk] Duplicate message skipped (bizMsgId): " + bizMsgId);
+        return { status: "SUCCESS", message: "OK" };
+      }
+      if (bizMsgId) markMessageProcessed('biz:' + bizMsgId);
+
       setStatus?.({ lastInboundAt: Date.now() });
       await processInboundMessage(data, ctx);
     } catch (err) {
