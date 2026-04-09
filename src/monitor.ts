@@ -1668,7 +1668,6 @@ async function dispatchWithFullPipeline(params: {
           log, setStatus, onFirstReply } = params;
   
   let firstReplyFired = false;
-  let typingSafetyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // 1. Resolve agent route via own bindings matching (like official plugin).
   // OpenClaw's resolveAgentRoute doesn't handle accountId correctly for multi-account.
@@ -1764,7 +1763,6 @@ async function dispatchWithFullPipeline(params: {
       // Recall typing indicator on first delivery
       if (!firstReplyFired && onFirstReply) {
         firstReplyFired = true;
-        if (typingSafetyTimeout) { clearTimeout(typingSafetyTimeout); typingSafetyTimeout = null; }
         await onFirstReply().catch((err) => {
           log?.info?.("[dingtalk] onFirstReply error: " + err);
         });
@@ -1792,21 +1790,11 @@ async function dispatchWithFullPipeline(params: {
     await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
   } finally {
     markDispatchIdle();
-    // Don't recall typing immediately — dispatchReplyFromConfig resolves when
-    // dispatch is *initiated*, not when the agent finishes. The agent may still
-    // be doing tool calls for minutes before producing the first text reply.
-    // The deliver callback above handles the normal recall on first delivery.
-    // Set a safety timeout to recall if no delivery ever arrives (edge case).
-    if (!firstReplyFired && onFirstReply) {
-      const TYPING_SAFETY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
-      typingSafetyTimeout = setTimeout(async () => {
-        if (!firstReplyFired && onFirstReply) {
-          firstReplyFired = true;
-          log?.info?.('[dingtalk] Typing safety timeout — recalling after no delivery');
-          await onFirstReply().catch(() => {});
-        }
-      }, TYPING_SAFETY_TIMEOUT_MS);
-    }
+    // Don't recall typing here — dispatchReplyFromConfig resolves when dispatch
+    // is *initiated*, not when the agent finishes. The agent may still be doing
+    // tool calls for many minutes before producing text. The deliver callback
+    // above handles recall on first delivery. If the agent crashes without
+    // replying, the emoji reaction simply stays — acceptable tradeoff.
   }
 
   // 10. Record activity
