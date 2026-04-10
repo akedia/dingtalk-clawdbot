@@ -198,6 +198,30 @@ const AGGREGATION_DELAY_MS = 2000; // 2 seconds - balance between UX and catchin
 
 const sessionQueues = new Map<string, Promise<void>>();
 const sessionQueueLastActivity = new Map<string, number>();
+
+// Track delivery activity per queue key to detect when the SDK's dispatch resolves
+// before the agent's full turn completes (e.g. followup turns running in background).
+// This supplements sessionQueues for the "busy" check.
+const DELIVER_ACTIVITY_GRACE_MS = 8000; // 8s after last delivery, consider idle
+const deliverActivityTimestamps = new Map<string, number>();
+
+function markDeliverActivity(queueKey: string): void {
+  deliverActivityTimestamps.set(queueKey, Date.now());
+}
+
+function hasActiveDelivery(queueKey: string): boolean {
+  const ts = deliverActivityTimestamps.get(queueKey);
+  if (!ts) return false;
+  if (Date.now() - ts > DELIVER_ACTIVITY_GRACE_MS) {
+    deliverActivityTimestamps.delete(queueKey);
+    return false;
+  }
+  return true;
+}
+
+function clearDeliverActivity(queueKey: string): void {
+  deliverActivityTimestamps.delete(queueKey);
+}
 const SESSION_QUEUE_TTL_MS = 5 * 60 * 1000; // 5 min
 
 const QUEUE_BUSY_PHRASES = [
@@ -1395,7 +1419,11 @@ async function dispatchMessage(params: {
   const { account, log } = ctx;
 
   const queueKey = `${account.accountId}:${conversationId}`;
-  const isQueueBusy = sessionQueues.has(queueKey);
+  // Check both the explicit queue AND recent delivery activity.
+  // The SDK's dispatchReplyFromConfig may resolve before the agent's full turn
+  // completes (followup turns run in background), clearing the queue entry
+  // while deliveries are still happening.
+  const isQueueBusy = sessionQueues.has(queueKey) || hasActiveDelivery(queueKey);
 
   // If queue is busy, add emotion reaction on user's message to indicate queued
   let queueAckCleanup: (() => Promise<void>) | null = null;
@@ -1437,11 +1465,13 @@ async function dispatchMessage(params: {
       // Clean up only if this is still the latest task
       if (sessionQueues.get(queueKey) === currentTask) {
         sessionQueues.delete(queueKey);
+        log?.info?.("[dingtalk] Queue entry removed for " + queueKey + " (deliverActive=" + hasActiveDelivery(queueKey) + ")");
       }
     });
 
   sessionQueues.set(queueKey, currentTask);
   sessionQueueLastActivity.set(queueKey, Date.now());
+  log?.info?.("[dingtalk] Queue entry set for " + queueKey + " (wasQueueBusy=" + isQueueBusy + ")");
 
   // Don't await — fire-and-forget so message buffering and SDK callback stay responsive
 }
@@ -1604,11 +1634,14 @@ async function dispatchMessageInternal(params: {
 
       // Await dispatch so per-session queue waits for reply delivery to complete
       // before starting the next queued message.
+      const fallbackQueueKey = `${account.accountId}:${conversationId}`;
       await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx: ctxPayload,
         cfg: actualCfg,
         dispatcherOptions: {
           deliver: async (payload: any) => {
+            // Track delivery activity for queue busy detection
+            markDeliverActivity(fallbackQueueKey);
             // Recall typing indicator on first delivery
             await cleanupTyping();
 
@@ -1757,9 +1790,12 @@ async function dispatchWithFullPipeline(params: {
   }
 
   // 8. Create typing-aware dispatcher
+  const deliverQueueKey = `${account.accountId}:${conversationId}`;
   const { dispatcher, replyOptions, markDispatchIdle } = rt.channel.reply.createReplyDispatcherWithTyping({
     responsePrefix: '',
     deliver: async (payload: any) => {
+      // Track delivery activity for queue busy detection
+      markDeliverActivity(deliverQueueKey);
       // Recall typing indicator on first delivery
       if (!firstReplyFired && onFirstReply) {
         firstReplyFired = true;
@@ -1787,14 +1823,24 @@ async function dispatchWithFullPipeline(params: {
 
   // 9. Dispatch reply from config
   try {
+    log?.info?.("[dingtalk] dispatchReplyFromConfig started for " + deliverQueueKey);
     await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
+    log?.info?.("[dingtalk] dispatchReplyFromConfig completed for " + deliverQueueKey);
   } finally {
+    // OpenClaw 2026.4+ moved dispatcher.markComplete() + waitForIdle() out of
+    // dispatchReplyFromConfig into the withReplyDispatcher wrapper. Since we call
+    // dispatchReplyFromConfig directly (not through withReplyDispatcher), we must
+    // do this ourselves to ensure all pending deliveries drain before returning.
+    try {
+      if (typeof dispatcher.markComplete === 'function') {
+        dispatcher.markComplete();
+      }
+      await dispatcher.waitForIdle();
+      log?.info?.("[dingtalk] dispatcher.waitForIdle completed for " + deliverQueueKey);
+    } catch (err) {
+      log?.info?.("[dingtalk] dispatcher settle error: " + err);
+    }
     markDispatchIdle();
-    // Don't recall typing here — dispatchReplyFromConfig resolves when dispatch
-    // is *initiated*, not when the agent finishes. The agent may still be doing
-    // tool calls for many minutes before producing text. The deliver callback
-    // above handles recall on first delivery. If the agent crashes without
-    // replying, the emoji reaction simply stays — acceptable tradeoff.
   }
 
   // 10. Record activity
