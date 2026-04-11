@@ -47,6 +47,48 @@ function markMessageProcessed(messageId: string): void {
 }
 
 // ============================================================================
+// Content-level dedup: DingTalk may re-deliver the same message with a NEW
+// msgId after Stream reconnect. Detect by sender + content hash + time window.
+// ============================================================================
+
+const CONTENT_DEDUP_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+const CONTENT_DEDUP_MAX = 200;
+const recentContentHashes = new Map<string, number>(); // hash → timestamp
+
+function simpleHash(str: string): string {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  }
+  return h.toString(36);
+}
+
+function isContentDuplicate(senderId: string, text: string, log?: any): boolean {
+  if (!senderId || !text || text.length < 4) return false;
+  const key = `${senderId}:${simpleHash(text)}:${text.length}`;
+  const prev = recentContentHashes.get(key);
+  if (prev && Date.now() - prev < CONTENT_DEDUP_WINDOW_MS) {
+    log?.info?.("[dingtalk] Content-level duplicate detected: sender=" + senderId + " len=" + text.length);
+    return true;
+  }
+  return false;
+}
+
+function markContentProcessed(senderId: string, text: string): void {
+  if (!senderId || !text || text.length < 4) return;
+  const key = `${senderId}:${simpleHash(text)}:${text.length}`;
+  recentContentHashes.set(key, Date.now());
+
+  // Evict old entries
+  if (recentContentHashes.size > CONTENT_DEDUP_MAX) {
+    const cutoff = Date.now() - CONTENT_DEDUP_WINDOW_MS;
+    for (const [k, ts] of recentContentHashes) {
+      if (ts < cutoff) recentContentHashes.delete(k);
+    }
+  }
+}
+
+// ============================================================================
 // Message Cache - used to resolve quoted message content from originalMsgId
 // DingTalk Stream API does NOT include quoted content in reply callbacks;
 // it only provides originalMsgId. We cache incoming/outgoing messages to look them up.
@@ -1279,6 +1321,13 @@ async function processInboundMessage(
       }
     }
   }
+
+  // Content-level dedup: DingTalk may re-deliver the same message with a
+  // completely new msgId after Stream reconnect. Catch by sender + content hash.
+  if (isContentDuplicate(senderId, rawBody, log)) {
+    return;
+  }
+  markContentProcessed(senderId, rawBody);
 
   const sessionKey = "dingtalk:" + account.accountId + ":" + (isDm ? "dm" : "group") + ":" + conversationId;
 
