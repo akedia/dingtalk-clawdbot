@@ -2026,6 +2026,10 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
     }
   }
 
+  // Auto @mention sender in group chats (only on first chunk to avoid spam)
+  const atUserIds = (!target.isDm && target.senderId) ? [target.senderId] : undefined;
+  let atApplied = false; // Only @ on the first chunk
+
   for (const chunk of chunks) {
     let webhookSuccess = false;
     const maxRetries = 2;
@@ -2037,12 +2041,13 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
           await throttleSend();
           log?.info?.("[dingtalk] Using sessionWebhook (attempt " + attempt + "/" + maxRetries + "), format=" + messageFormat);
           log?.info?.("[dingtalk] Sending text (" + chunk.length + " chars): " + chunk.substring(0, 200));
+          const currentAt = (!atApplied && atUserIds) ? atUserIds : undefined;
           let sendResult: { ok: boolean; errcode?: number; errmsg?: string; processQueryKey?: string };
           if (isMarkdown) {
             const markdownTitle = buildMarkdownPreviewTitle(chunk, "Jax");
-            sendResult = await sendMarkdownViaSessionWebhook(target.sessionWebhook, markdownTitle, chunk);
+            sendResult = await sendMarkdownViaSessionWebhook(target.sessionWebhook, markdownTitle, chunk, currentAt);
           } else {
-            sendResult = await sendViaSessionWebhook(target.sessionWebhook, chunk);
+            sendResult = await sendViaSessionWebhook(target.sessionWebhook, chunk, currentAt);
           }
           if (!sendResult.ok) {
             throw new Error(`SessionWebhook rejected: errcode=${sendResult.errcode}, errmsg=${sendResult.errmsg}`);
@@ -2056,6 +2061,7 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
             // so interactiveCard quotes can resolve via repliedMsg.createdAt
             cacheOutboundMessageByTime(chunk);
           }
+          if (currentAt) atApplied = true;
           webhookSuccess = true;
           break;
         } catch (err) {
