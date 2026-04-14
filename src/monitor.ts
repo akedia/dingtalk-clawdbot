@@ -1673,7 +1673,9 @@ async function dispatchMessageInternal(params: {
       // Fallback: existing buffered block dispatcher
       // Per-group system prompt for fallback path
       const _fallbackGroupsConfig = account?.config?.groups ?? {};
-      const _fallbackGroupSystemPrompt = isGroup ? (_fallbackGroupsConfig?.[conversationId]?.systemPrompt?.trim() || undefined) : undefined;
+      const _fallbackCustomPrompt = isGroup ? (_fallbackGroupsConfig?.[conversationId]?.systemPrompt?.trim() || undefined) : undefined;
+      const _AT_HINT = 'To @mention someone in this group, use <at:STAFFID> in your reply (e.g. "<at:0164546066>请查看"). Look up staffId with "dws contact user search --query NAME --format json". Do NOT write @Name — only <at:STAFFID> with angle brackets triggers a real DingTalk @mention. The sender is auto-@mentioned.';
+      const _fallbackGroupSystemPrompt = isGroup ? (_fallbackCustomPrompt ? `${_fallbackCustomPrompt}\n\n${_AT_HINT}` : _AT_HINT) : undefined;
 
       const ctxPayload = {
         Body: rawBody,
@@ -1831,7 +1833,9 @@ async function dispatchWithFullPipeline(params: {
   // 6a. Per-group system prompt (read from account.config.groups)
   const groupsConfig = account?.config?.groups ?? {};
   const groupOverride = !isDm ? (groupsConfig?.[conversationId] ?? {}) : {};
-  const groupSystemPrompt = !isDm ? (groupOverride?.systemPrompt?.trim() || undefined) : undefined;
+  const AT_MENTION_HINT = 'To @mention someone in this group, use <at:STAFFID> in your reply (e.g. "<at:0164546066>请查看"). Look up staffId with "dws contact user search --query NAME --format json". Do NOT write @Name — only <at:STAFFID> with angle brackets triggers a real DingTalk @mention. The sender is auto-@mentioned.';
+  const customGroupPrompt = !isDm ? (groupOverride?.systemPrompt?.trim() || undefined) : undefined;
+  const groupSystemPrompt = !isDm ? (customGroupPrompt ? `${customGroupPrompt}\n\n${AT_MENTION_HINT}` : AT_MENTION_HINT) : undefined;
 
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: body, RawBody: rawBody, CommandBody: rawBody, From: to, To: to,

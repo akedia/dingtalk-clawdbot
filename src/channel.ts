@@ -361,7 +361,14 @@ export const dingtalkPlugin = {
     describeMessageTool({ cfg }: { cfg: any }) {
       return {
         actions: ['send', 'sendAttachment'],
-        instructions: 'To @mention a user in group chat replies, include <at:staffId> in your response text (e.g. "<at:12345> please check this"). The marker is stripped from displayed text and converted to a real DingTalk @mention. Use dws contact user search to look up staffId by name. The message sender is automatically @mentioned in group replies.',
+        instructions: [
+          'DingTalk @mention syntax: wrap staffId in <at:STAFFID> markers.',
+          'Example: "<at:0164546066>你好" sends a real @mention to that user.',
+          'The <at:...> marker is stripped from displayed text automatically.',
+          'Look up staffId: use "dws contact user search --query NAME --format json".',
+          'The message sender is auto-@mentioned in group replies (no marker needed for them).',
+          'IMPORTANT: Do NOT write @Name or at:id — only <at:STAFFID> with angle brackets works.',
+        ].join(' '),
       };
     },
 
