@@ -370,7 +370,7 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
 
   // Reconnection configuration
   const HEARTBEAT_CHECK_MS = 30_000;     // Check connectivity every 30s
-  const HEARTBEAT_TIMEOUT_MS = 3 * 60 * 1000; // 3 min no activity = force reconnect
+  const HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1000; // 5 min no activity = force reconnect (safety net only)
   const RECONNECT_BASE_MS = 1_000;       // 1s initial backoff
   const RECONNECT_CAP_MS = 30_000;       // 30s max backoff
   let reconnectAttempt = 0;
@@ -438,7 +438,7 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
       log?.info?.("[dingtalk:" + account.accountId + "] Stream connected");
       setStatus?.({ running: true, lastStartAt: connectTime });
 
-      // Start heartbeat monitor: if no activity for 3 min, force disconnect to trigger reconnect.
+      // Start heartbeat monitor: if no activity for 5 min, force disconnect to trigger reconnect.
       // The SDK's keepAlive ping/pong (8s interval) handles socket-level liveness and sets
       // client.connected=false on missed pongs, which our poll loop below detects.
       // This heartbeat is a secondary safety net for higher-level silent failures where
