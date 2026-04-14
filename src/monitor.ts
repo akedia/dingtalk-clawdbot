@@ -89,6 +89,23 @@ function markContentProcessed(senderId: string, text: string): void {
 }
 
 // ============================================================================
+// Send Throttle - prevent hitting DingTalk's 40 QPS API rate limit.
+// Enforces a minimum interval between outbound API calls.
+// ============================================================================
+
+const SEND_THROTTLE_MS = 500; // 500ms minimum between sends
+let lastSendTime = 0;
+
+async function throttleSend(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastSendTime;
+  if (elapsed < SEND_THROTTLE_MS) {
+    await new Promise(resolve => setTimeout(resolve, SEND_THROTTLE_MS - elapsed));
+  }
+  lastSendTime = Date.now();
+}
+
+// ============================================================================
 // Message Cache - used to resolve quoted message content from originalMsgId
 // DingTalk Stream API does NOT include quoted content in reply callbacks;
 // it only provides originalMsgId. We cache incoming/outgoing messages to look them up.
@@ -352,8 +369,8 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   });
 
   // Reconnection configuration
-  const HEARTBEAT_CHECK_MS = 30_000;     // Check connectivity every 30s
-  const HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1000; // 5 min no activity = force reconnect
+  const HEARTBEAT_CHECK_MS = 15_000;     // Check connectivity every 15s
+  const HEARTBEAT_TIMEOUT_MS = 90_000;   // 90s no activity = force reconnect
   const RECONNECT_BASE_MS = 1_000;       // 1s initial backoff
   const RECONNECT_CAP_MS = 30_000;       // 30s max backoff
   let reconnectAttempt = 0;
@@ -420,7 +437,7 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
       log?.info?.("[dingtalk:" + account.accountId + "] Stream connected");
       setStatus?.({ running: true, lastStartAt: connectTime });
 
-      // Start heartbeat monitor: if no activity for 5 minutes, force disconnect to trigger reconnect.
+      // Start heartbeat monitor: if no activity for 90s, force disconnect to trigger reconnect.
       // The SDK's keepAlive ping/pong (8s interval) handles socket-level liveness and sets
       // client.connected=false on missed pongs, which our poll loop below detects.
       // This heartbeat is a secondary safety net for higher-level silent failures where
@@ -2016,6 +2033,7 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
     if (target.sessionWebhook && now < (target.sessionWebhookExpiry - 60_000)) {
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
+          await throttleSend();
           log?.info?.("[dingtalk] Using sessionWebhook (attempt " + attempt + "/" + maxRetries + "), format=" + messageFormat);
           log?.info?.("[dingtalk] Sending text (" + chunk.length + " chars): " + chunk.substring(0, 200));
           let sendResult: { ok: boolean; errcode?: number; errmsg?: string; processQueryKey?: string };
@@ -2057,6 +2075,7 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
     // Fallback to REST API if webhook failed after all retries
     if (!webhookSuccess && target.account.clientId && target.account.clientSecret) {
       try {
+        await throttleSend();
         log?.info?.("[dingtalk] SessionWebhook unavailable, using REST API fallback");
         const restResult = await sendDingTalkRestMessage({
           clientId: target.account.clientId,
