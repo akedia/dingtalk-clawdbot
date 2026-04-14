@@ -359,7 +359,10 @@ export const dingtalkPlugin = {
   actions: {
     // New SDK interface (2026.3.22+): replaces listActions
     describeMessageTool({ cfg }: { cfg: any }) {
-      return { actions: ['send', 'sendAttachment'] };
+      return {
+        actions: ['send', 'sendAttachment'],
+        instructions: 'To @mention a user in group chat replies, include <at:staffId> in your response text (e.g. "<at:12345> please check this"). The marker is stripped from displayed text and converted to a real DingTalk @mention. Use dws contact user search to look up staffId by name. The message sender is automatically @mentioned in group replies.',
+      };
     },
 
     // Legacy - kept for compatibility
