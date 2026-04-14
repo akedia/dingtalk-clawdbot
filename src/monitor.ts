@@ -2026,8 +2026,26 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
     }
   }
 
-  // Auto @mention sender in group chats (only on first chunk to avoid spam)
-  const atUserIds = (!target.isDm && target.senderId) ? [target.senderId] : undefined;
+  // Parse <at:staffId> markers from agent response and collect explicit @mentions
+  const explicitAtIds: string[] = [];
+  const atPattern = /<at:([a-zA-Z0-9_]+)>/g;
+  // Strip markers from all chunks and collect staffIds
+  for (let i = 0; i < chunks.length; i++) {
+    let match;
+    while ((match = atPattern.exec(chunks[i])) !== null) {
+      if (!explicitAtIds.includes(match[1])) explicitAtIds.push(match[1]);
+    }
+    chunks[i] = chunks[i].replace(atPattern, '').replace(/  +/g, ' ').trim();
+  }
+  if (explicitAtIds.length > 0) {
+    log?.info?.("[dingtalk] Explicit @mentions parsed: " + JSON.stringify(explicitAtIds));
+  }
+
+  // Build atUserIds: explicit markers + auto-@ sender in group chats
+  const atUserIds: string[] = [...explicitAtIds];
+  if (!target.isDm && target.senderId && !atUserIds.includes(target.senderId)) {
+    atUserIds.push(target.senderId);
+  }
   let atApplied = false; // Only @ on the first chunk
 
   for (const chunk of chunks) {
@@ -2041,7 +2059,7 @@ async function deliverReply(target: any, text: string, log?: any): Promise<void>
           await throttleSend();
           log?.info?.("[dingtalk] Using sessionWebhook (attempt " + attempt + "/" + maxRetries + "), format=" + messageFormat);
           log?.info?.("[dingtalk] Sending text (" + chunk.length + " chars): " + chunk.substring(0, 200));
-          const currentAt = (!atApplied && atUserIds) ? atUserIds : undefined;
+          const currentAt = (!atApplied && atUserIds.length > 0) ? atUserIds : undefined;
           let sendResult: { ok: boolean; errcode?: number; errmsg?: string; processQueryKey?: string };
           if (isMarkdown) {
             const markdownTitle = buildMarkdownPreviewTitle(chunk, "Jax");
