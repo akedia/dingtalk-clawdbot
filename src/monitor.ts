@@ -421,6 +421,7 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   });
 
   client.registerAllEventListener((msg: any) => {
+    touchActivity(); // SDK events (including ping/pong) count as activity
     return { status: "SUCCESS", message: "OK" };
   });
 
