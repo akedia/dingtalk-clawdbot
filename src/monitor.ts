@@ -1494,6 +1494,22 @@ async function flushMessageBuffer(bufferKey: string): Promise<void> {
 }
 
 /**
+ * Resolve queue lane suffix based on message content.
+ * /btw and abort/status commands get their own lanes so they can run
+ * in parallel with the main message queue (matching Feishu/Telegram behaviour).
+ */
+function resolveQueueLane(text: string): string {
+  const t = text.trim();
+  // /btw side question — separate lane
+  if (/^\/btw(\s|:|$)/i.test(t)) return ':btw';
+  // abort / stop — control lane
+  if (/^\/stop(\s|$)/i.test(t) || /^(stop|esc|abort|cancel|exit|halt|interrupt)$/i.test(t)) return ':control';
+  // status commands — control lane
+  if (/^\/(help|commands|tools|status|tasks|context)(\s|$)/i.test(t)) return ':control';
+  return '';
+}
+
+/**
  * Dispatch a message to the agent (after aggregation or immediately).
  * Enqueues into per-session queue to prevent concurrent processing.
  */
@@ -1513,16 +1529,21 @@ async function dispatchMessage(params: {
   const { ctx, conversationId } = params;
   const { account, log } = ctx;
 
-  const queueKey = `${account.accountId}:${conversationId}`;
+  const lane = resolveQueueLane(params.rawBody);
+  const mainQueueKey = `${account.accountId}:${conversationId}`;
+  const queueKey = `${mainQueueKey}${lane}`;
   // Check both the explicit queue AND recent delivery activity.
   // The SDK's dispatchReplyFromConfig may resolve before the agent's full turn
   // completes (followup turns run in background), clearing the queue entry
   // while deliveries are still happening.
-  const isQueueBusy = sessionQueues.has(queueKey) || hasActiveDelivery(queueKey);
+  // btw/control lanes check against their OWN key (not the main queue) —
+  // they are allowed to run in parallel with the main queue.
+  const isQueueBusy = sessionQueues.has(queueKey) || (lane === '' && hasActiveDelivery(mainQueueKey));
 
   // If queue is busy, add emotion reaction on user's message to indicate queued
+  // (skip for btw/control lanes — they bypass the main queue by design)
   let queueAckCleanup: (() => Promise<void>) | null = null;
-  if (isQueueBusy) {
+  if (isQueueBusy && lane === '') {
     log?.info?.("[dingtalk] Queue busy for " + queueKey + ", adding queue reaction");
     try {
       if (account.clientId && account.clientSecret && params.msg.msgId && conversationId) {
