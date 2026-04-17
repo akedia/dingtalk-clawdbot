@@ -250,6 +250,30 @@ const messageBuffer = new Map<string, BufferedMessage>();
 const AGGREGATION_DELAY_MS = 2000; // 2 seconds - balance between UX and catching split messages
 
 // ============================================================================
+// Reply Target Cache — remember the latest replyTarget (with sessionWebhook)
+// per conversation so that proactive/cron sends can use the persona-preserving
+// sessionWebhook path instead of falling back to robot-identity REST API.
+// ============================================================================
+
+const replyTargetCache = new Map<string, any>();
+const REPLY_TARGET_CACHE_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours
+
+function buildReplyTargetCacheKey(isDm: boolean, conversationId: string, senderId: string): string {
+  return isDm ? `dm:${senderId}` : `group:${conversationId}`;
+}
+
+/** Look up the most recent replyTarget for a conversation (for outbound/cron sends). */
+export function getCachedReplyTarget(cacheKey: string): any | undefined {
+  const entry = replyTargetCache.get(cacheKey);
+  if (!entry) return undefined;
+  if (Date.now() - entry._cachedAt > REPLY_TARGET_CACHE_TTL_MS) {
+    replyTargetCache.delete(cacheKey);
+    return undefined;
+  }
+  return entry;
+}
+
+// ============================================================================
 // Per-Session Message Queue - serializes dispatch to prevent concurrent
 // processing of messages in the same conversation. Uses Promise chaining:
 // each new message's dispatch waits for the previous one to complete.
@@ -1358,6 +1382,10 @@ async function processInboundMessage(
     account,
   };
 
+  // Cache replyTarget so proactive/cron sends can use sessionWebhook
+  const rtCacheKey = buildReplyTargetCacheKey(isDm, conversationId, senderId);
+  replyTargetCache.set(rtCacheKey, { ...replyTarget, _cachedAt: Date.now() });
+
   // Check if message aggregation is enabled
   const aggregationEnabled = account.config.messageAggregation !== false;
   const aggregationDelayMs = account.config.messageAggregationDelayMs ?? AGGREGATION_DELAY_MS;
@@ -1977,7 +2005,7 @@ function buildMarkdownPreviewTitle(text: string, fallback = "Jax"): string {
   return fallback;
 }
 
-async function deliverReply(target: any, text: string, log?: any): Promise<void> {
+export async function deliverReply(target: any, text: string, log?: any): Promise<void> {
   const now = Date.now();
   const chunkLimit = target.account.config.textChunkLimit ?? 2000;
   const messageFormat = target.account.config.messageFormat ?? "text";

@@ -1,6 +1,6 @@
 import { getDingTalkRuntime } from './runtime.js';
 import { resolveDingTalkAccount, listDingTalkAccountIds, resolveDefaultDingTalkAccountId } from './accounts.js';
-import { startDingTalkMonitor } from './monitor.js';
+import { startDingTalkMonitor, getCachedReplyTarget, deliverReply } from './monitor.js';
 import { sendDingTalkRestMessage, uploadMediaFile, sendFileMessage, textToMarkdownFile } from './api.js';
 import { probeDingTalk } from './probe.js';
 
@@ -384,7 +384,40 @@ export const dingtalkPlugin = {
     async handleAction(ctx: any) {
       const { action, params, cfg, accountId, conversationTarget } = ctx;
 
-      // Only handle sendAttachment action
+      // Handle 'send' action: route through deliverReply for sessionWebhook persona
+      if (action === 'send') {
+        const text = params?.text || params?.message;
+        if (!text) return null;
+
+        let target = params?.target || params?.to || conversationTarget;
+        if (!target) return null;
+
+        const { type, id } = parseOutboundTo(target);
+        const cacheKey = (type === 'dm' ? 'dm:' : 'group:') + id;
+        const cached = getCachedReplyTarget(cacheKey);
+
+        // Build a replyTarget — use cached sessionWebhook if available
+        const account = resolveDingTalkAccount({ cfg, accountId });
+        const replyTarget = cached
+          ? { ...cached, account } // refresh account credentials
+          : {
+              sessionWebhook: undefined,
+              sessionWebhookExpiry: 0,
+              conversationId: type === 'group' ? id : '',
+              senderId: type === 'dm' ? id : '',
+              isDm: type === 'dm',
+              account,
+            };
+
+        await deliverReply(replyTarget, text);
+        return {
+          ok: true,
+          channel: 'dingtalk',
+          content: [{ type: 'text', text: JSON.stringify({ ok: true, sent: true }) }],
+        };
+      }
+
+      // Only handle sendAttachment action below
       if (action !== 'sendAttachment') {
         return null; // Let SDK handle other actions
       }
