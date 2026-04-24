@@ -1,4 +1,4 @@
-# 🤖 DingTalk Plugin for Clawdbot
+# 🤖 DingTalk Plugin for OpenClaw
 
 [![npm](https://img.shields.io/npm/v/@yaoyuanchao/dingtalk.svg)](https://www.npmjs.com/package/@yaoyuanchao/dingtalk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -17,14 +17,16 @@
 
 ```bash
 # 1. 安装
-clawdbot plugins install @yaoyuanchao/dingtalk
+openclaw plugins install @yaoyuanchao/dingtalk
 
 # 2. 配置（交互式向导）
-clawdbot onboard --channel dingtalk
+openclaw onboard --channel dingtalk
 
 # 3. 启动
-clawdbot gateway
+openclaw gateway
 ```
+
+> ClawdBot（旧名）用户见 [UPGRADE.md](./UPGRADE.md) 的迁移指南。
 
 完事！去钉钉找机器人聊天吧。
 
@@ -111,7 +113,9 @@ Access denied. Your staffId: 050914XXXXXXXXX
 
 ## 📝 更新日志
 
-**v1.5.0** — 新增 Typing Indicator（思考中提示，自动撤回）
+**v1.7.x** — Queue lane 路由（`/btw` 与 `/stop` 独立通道）、Cron/proactive 消息走 deliverReply 保持 persona
+
+**v1.5.x** — 新增 Typing Indicator（思考中提示，自动撤回）、OpenClaw 兼容
 
 **v1.4.x** — 媒体消息支持、长文本文件发送
 

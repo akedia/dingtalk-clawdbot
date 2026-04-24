@@ -143,23 +143,21 @@ openclaw onboard --channel dingtalk
 
 | 版本 | 关键变更 |
 |------|---------|
+| v1.7.11 | Queue lane 路由：`/btw` 与 `/stop` 走独立 lane，避免相互阻塞 |
+| v1.7.10 | Cron/proactive 发送改走 `deliverReply`，保留 persona |
+| v1.7.8 | Group 自动 `@mention` 发送者、支持 `<at:staffId>` 显式 @ |
+| v1.7.6 | 内容级 dedup：钉钉重投同一消息但换了 msgId 的场景也能挡住 |
+| v1.7.5 | 恢复 `dispatcher.waitForIdle()` 以兼容 OpenClaw 2026.4+ |
+| v1.7.4 | 业务级 `msgId` dedup，挡住重复回复；typing indicator 撤回时机修复 |
+| v1.7.0~ | Per-group sender allowFrom 过滤、Heartbeat 超时调优 |
 | v1.5.0 | **OpenClaw 兼容**：新增 `openclaw.plugin.json`，支持 ClawdBot → OpenClaw 无缝迁移 |
 | v1.4.20 | 消息聚合：同一用户短时间内的多条消息合并处理，解决链接卡片分割问题 |
-| v1.4.19 | 支持链接卡片消息（link msgtype），用户分享的链接可被正确解析 |
-| v1.4.18 | 修复 sendAttachment 返回格式，避免 SDK 报错；默认阈值改为 8000 |
-| v1.4.17 | 添加 listActions，让 SDK 告知 agent 支持 sendAttachment |
-| v1.4.16 | 支持 sendAttachment action，agent 可主动发送文件 |
-| v1.4.15 | 新增 outbound.sendFile 能力，支持主动发送文件 |
-| v1.4.14 | message 工具默认使用 markdown 格式发送 |
-| v1.4.13 | message 工具支持 longTextMode=file |
-| v1.4.12 | 修复文件上传 API (切换到 oapi 端点) |
-| v1.4.11 | 新增 longTextMode=file 配置，支持长文本转.md文件发送 |
-| v1.4.10 | 移除 peerDependencies，官方升级命令可用 |
-| v1.4.9 | zod v4 兼容性修复 |
-| v1.4.7 | chatRecord 消息图片下载 |
+| v1.4.x | 媒体消息、长文本文件发送、sendAttachment、listActions、markdown 默认 |
 | v1.3.0 | 完整 SDK Pipeline、媒体支持 |
 | v1.2.0 | NPM 官方发布 |
 
+完整变更见 [CHANGELOG.md](./CHANGELOG.md) 与 `git log`。
+
 ---
 
-**最后更新**: 2026-01-31 (v1.4.20)
+**最后更新**: 2026-04-24 (v1.7.11)
