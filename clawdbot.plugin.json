@@ -1,9 +1,109 @@
 {
   "id": "dingtalk",
   "channels": ["dingtalk"],
+  "channelEnvVars": {
+    "dingtalk": []
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "channelConfigs": {
+    "dingtalk": {
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "enabled": { "type": "boolean", "description": "Enable this account" },
+          "name": { "type": "string", "description": "Display name for this account" },
+          "clientId": { "type": "string", "description": "DingTalk application AppKey" },
+          "clientSecret": { "type": "string", "description": "DingTalk application AppSecret" },
+          "robotCode": { "type": "string", "description": "Robot code (defaults to clientId if omitted)" },
+          "dm": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean", "description": "Enable direct messages" },
+              "policy": {
+                "type": "string",
+                "enum": ["disabled", "pairing", "allowlist", "open"],
+                "description": "DM access policy"
+              },
+              "allowFrom": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Allowed staff IDs (for pairing/allowlist policy)"
+              }
+            }
+          },
+          "groupPolicy": {
+            "type": "string",
+            "enum": ["disabled", "allowlist", "open"],
+            "description": "Group chat access policy"
+          },
+          "groupAllowlist": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Allowed group conversation IDs"
+          },
+          "requireMention": { "type": "boolean", "description": "Require @ mention in group chats" },
+          "messageFormat": {
+            "type": "string",
+            "enum": ["text", "markdown", "richtext", "auto"],
+            "description": "Outbound message format"
+          },
+          "showThinking": { "type": "boolean", "description": "Send thinking indicator before reply" },
+          "textChunkLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Text chunk size limit for long messages"
+          },
+          "longTextMode": {
+            "type": "string",
+            "enum": ["chunk", "file"],
+            "description": "How to deliver long text (split chunks or attached .md)"
+          },
+          "longTextThreshold": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Character threshold for longTextMode=file"
+          },
+          "groups": {
+            "type": "object",
+            "description": "Per-group overrides keyed by conversationId",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "systemPrompt": { "type": "string", "description": "Extra system prompt for this group" },
+                "enabled": { "type": "boolean", "description": "Disable this group (false = ignore all messages)" },
+                "allowFrom": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Whitelist of senderStaffId in this group (supports * wildcard)"
+                }
+              }
+            }
+          },
+          "messageAggregation": { "type": "boolean", "description": "Aggregate quick consecutive messages from same sender" },
+          "messageAggregationDelayMs": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Aggregation window in milliseconds"
+          },
+          "accounts": {
+            "type": "object",
+            "description": "Named accounts; values override top-level settings",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "defaultAccount": { "type": "string", "description": "Default account ID when accounts is defined" }
+        }
+      }
+    }
   }
 }
