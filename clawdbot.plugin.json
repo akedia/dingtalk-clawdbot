@@ -75,8 +75,9 @@
             "description": "Per-group overrides keyed by conversationId",
             "additionalProperties": {
               "type": "object",
-              "additionalProperties": false,
+              "additionalProperties": true,
               "properties": {
+                "name": { "type": "string", "description": "Optional human label for this group" },
                 "systemPrompt": { "type": "string", "description": "Extra system prompt for this group" },
                 "enabled": { "type": "boolean", "description": "Disable this group (false = ignore all messages)" },
                 "allowFrom": {
