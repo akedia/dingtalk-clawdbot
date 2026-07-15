@@ -1379,11 +1379,12 @@ async function getSpaceId(clientId, clientSecret, openConversationId, unionId, l
       { openConversationId, unionId },
       { "x-acs-dingtalk-access-token": token }
     );
-    if (!res.spaceId) {
+    const rawSpaceId = res.spaceId ?? res.space?.spaceId;
+    if (!rawSpaceId) {
       log?.warn?.(`[dingtalk][quoted-file] Failed to get spaceId for conv=${openConversationId}: ${JSON.stringify(res).substring(0, 300)}`);
       return null;
     }
-    const spaceId = String(res.spaceId);
+    const spaceId = String(rawSpaceId);
     lruSet(spaceIdCache, cacheKey, spaceId, SPACE_CACHE_MAX);
     return spaceId;
   } catch (err) {
