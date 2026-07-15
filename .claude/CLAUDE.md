@@ -1,23 +1,25 @@
 # DingTalk Clawdbot Plugin
 
-> DingTalk Channel Plugin for ClawdBot/OpenClaw（`@yaoyuanchao/dingtalk` v1.7.11）
+> DingTalk Channel Plugin for ClawdBot/OpenClaw（`@yaoyuanchao/dingtalk` v1.7.12）
 
 ## 状态
 
-- ✅ OpenClaw 2026.4.22 升级（2026-04-24）— 修复 reply dispatcher 流式末尾重复发送问题，详见升级记录
+- ✅ OpenClaw 2026.5.18 升级（2026-05-20）— Discord/acpx/weixin 外部化、Bedrock 清理、Discord READY 超时调优、bootstrap 文件大瘦身、orphan session 归档 1.25 GB，详见升级记录
+- ✅ OpenClaw 2026.4.22 升级（2026-04-24）— 修复 reply dispatcher 流式末尾重复发送，详见升级记录
 - 🔄 待办: 单元测试、CI/CD
 
 ## 快速参考
 
 | 信息 | 值 |
 |------|-----|
-| NPM 包 | `@yaoyuanchao/dingtalk` v1.7.11 |
+| NPM 包 | `@yaoyuanchao/dingtalk` v1.7.12 |
 | GitHub | https://github.com/akedia/dingtalk-clawdbot |
 | 远端服务器 | `ssh root@172.20.90.45`，运行用户 `clawd` |
 | Gateway 管理 | `openclaw gateway restart/stop/start/status` |
 | 插件升级 | **不要用** `openclaw plugins update dingtalk`（会覆盖为 npm 版本），用 git pull |
-| 模型 | `onehub-claude/claude-sonnet-4-6`（via onehub，不需要代理） |
-| OpenClaw 版本 | `2026.4.22` |
+| 模型 | `onehub-claude/claude-sonnet-5`（main/clawd2；agents 默认 `onehub-gemini/gemini-3.5-flash`，qiang 继承默认。via onehub，不需要代理） |
+| OpenClaw 版本 | `2026.6.11`（切 Sonnet 5 时顺带升级；2026-07-15 计划升 2026.7.1） |
+| 外部插件 | `@openclaw/discord` / `@openclaw/acpx` / `@tencent-weixin/openclaw-weixin@2.4.3`（5.x 起 bundle 拆离） |
 | Agent 列表 | `main`（Jax）、`qiang`（QiangBot）、`clawd2`（Clawd2）— 共享同一 runtime |
 | 本地分支 | `master` |
 
@@ -51,7 +53,8 @@
 - **服务**：systemd user service `openclaw-gateway.service`（用户 `clawd`，UID 1001，端口 18789）
 - **服务文件**：`/home/clawd/.config/systemd/user/openclaw-gateway.service`
 - **入口**：`dist/index.js`（2026.2.23 以后从 `entry.js` 改过来的）
-- **模型 provider**：`onehub-claude`，走 onehub 网关，不需要代理
+- **模型 provider**：`onehub-claude`（`baseUrl: https://onehub.tap4fun.com/claude`，`api: anthropic-messages`），走 onehub 网关，不需要代理
+- **Sonnet 5 手动声明**（≤2026.6.11 catalog 不认识 sonnet-5 的兼容 hack）：provider 里手动定义 `claude-sonnet-5`（contextWindow 200000 / maxTokens 64000 / `params.canonicalModelId: "claude-sonnet-4-6"` 借用 4-6 的能力映射）。maxTokens 2026-07-14 从 16384 调到 64000（onehub 实测 128K 也接受；Sonnet 5 官方上限 1M context / 128K output）。OpenClaw 2026.7.1 起原生支持 Sonnet 5（PR #98254），升级后可评估简化/移除该手动定义
 
 ## Debugging Protocol
 
@@ -106,11 +109,47 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 - OpenClaw health-monitor 每 5 分钟检查一次，检测到 `running: false` 会触发 auto-restart 循环（最多 10 次，指数退避）
 - 日志里每 300s 左右出现一次 `Heartbeat timeout, forcing reconnect` 是正常的 — SDK 默认 idle 超时触发的保活重连，不代表异常
 
-### OpenClaw 2026.4.22（当前版本）
-- `openclaw doctor --fix` 可能向 channel 配置注入平台级键（如 `allowFrom`）— 插件的 Zod schema 用 `.passthrough()` 兼容
+### OpenClaw 2026.5.18（当前版本）
+- `openclaw doctor --fix` 可能向 channel 配置注入平台级键（如 `allowFrom`、`dmPolicy`），插件 Zod schema 用 `.passthrough()` 兼容；升级后必须 backup vs current 完整 diff
+- **5.x 起 Discord/acpx/weixin 已外部化**：需 `openclaw plugins install @openclaw/discord` / `@openclaw/acpx` / `@tencent-weixin/openclaw-weixin@2.4.3` 单独装
+- **Discord channel** 必须配 `gatewayReadyTimeoutMs: 45000`（默认 15000 在 event loop 饱和时不够；2026-05-20 实测踩坑）
+- `plugins.allow` 已被 `plugins.bundledDiscovery` 替代（`doctor --fix` 自动迁移为 `"compat"`）
 - LAN 绑定的 gateway 需要 `gateway.controlUi.allowedOrigins` 或 `dangerouslyAllowHostHeaderOriginFallback: true`（2026.2.23 起要求）
 
 ## 升级记录
+
+### 2026-05-20: OpenClaw 2026.4.22 → 2026.5.18 + 大扫除
+
+**触发原因**：用户问"线上 clawdbot 瓜了吗"。一查发现两个非致命问题：Discord channel 启动时 `Cannot find package 'openclaw'`（4.22 packaging 缺陷），以及 `bedrock-discovery` 启动 warn（AWS key 失效）。一并升级清理。
+
+**Breaking changes 验证**（`npm pack openclaw@2026.5.18` 提取 CHANGELOG）：
+- **4.24**：`api.registerEmbeddedExtensionFactory(...)` 移除 → DingTalk 插件没用 ✅
+- **5.12**：Proxyline 替换内部 proxy → 用 onehub 直连不走 proxy ✅
+- **5.12**：iMessage BlueBubbles 移除 → 不用 ✅
+
+**操作步骤**：
+1. 备份 `openclaw.json.pre-2026.5.18.bak`
+2. 从 `openclaw.json` 删除 `models.providers.amazon-bedrock` + `env.AWS_ACCESS_KEY_ID/SECRET/REGION` 失效凭证
+3. `npm install -g openclaw@2026.5.18`（54 added / 139 removed / 307 changed）
+4. `openclaw plugins install @openclaw/discord`（5.x 拆离）→ symlink 自动指回全局 openclaw，包路径问题彻底修复
+5. 配置 `channels.discord.gatewayReadyTimeoutMs: 45000` —— 启动 READY 超时根因是 event loop 饱和（126 命令注册 + bootstrap 文件加载）阻塞 callback，不是 GFW
+6. 同时安装 `@openclaw/acpx` + `@tencent-weixin/openclaw-weixin@2.4.3`，把旧的 `~/.openclaw/extensions/openclaw-weixin/` 移到 `.archive/` 消除 duplicate warn
+7. 清理 systemd service 文件里硬编码的 AWS env vars（3 行）
+8. 给本仓库 `openclaw.plugin.json` + `clawdbot.plugin.json` 加 `channelConfigs` JSON schema（5.18 起 lint 要求），bump v1.7.12
+9. `openclaw doctor --fix` 自动迁移 `plugins.allow` → `plugins.bundledDiscovery="compat"`
+10. `openclaw tasks maintenance --apply`：9 task-flow reconcile + 48 prune，audit warnings 198→4
+11. 归档 4755 个 orphan `.jsonl` session 文件（renamed to `.deleted.<ts>`，约 1.25 GB）
+12. Bootstrap 文件大瘦身：USER.md / MEMORY.md / TOOLS.md 从 117 KB → 34 KB（71%↓），全部低于 12 KB truncation 限额；原文件归档在 `~/clawd/.archive/memory-2026-05-20/`
+
+**踩到的坑**：
+- 写 `channelConfigs` schema 时给 `groups.<cid>` 设了 `additionalProperties: false`，但实际配置里有 `name` 字段（Zod `.passthrough()` 历史允许）→ gateway 拒启动。修复：改 `additionalProperties: true` + 显式声明 `name`（commit `7653bd6`）
+- 装 `@openclaw/weixin` 后旧本地 `~/.openclaw/extensions/openclaw-weixin/` 仍被扫描造成 duplicate，必须**移到 `extensions/` 外**才生效
+
+**升级收益**（累积 4.22 → 5.18）：
+- 5.18 changelog 明确提到「**external runtime-dependency repair for packaged installs**」+「**Packaged installs: preserve package-root runtime dependencies**」—— 这就是 Discord packaging 问题的修复
+- Telegram 错误消息丢失修复、Slack file redirect 修复、context engine for Codex sessions 等若干通道修复
+- Plugin SDK 改进：`channelConfigs` 描述符让 setup UI 能在 runtime 加载前正确工作
+- 启动时静态模型 catalog + lazy provider deps，启动更轻
 
 ### 2026-04-24: OpenClaw 2026.4.15 → 2026.4.22
 
@@ -145,4 +184,4 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 4. **回滚方案**：升级前手动备份 `openclaw.json.pre-<version>.bak`；`openclaw.json.bak` 是 doctor 自动创建的，可用于回滚配置
 
 ---
-**最后更新**: 2026-04-24
+**最后更新**: 2026-05-20

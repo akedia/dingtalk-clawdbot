@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.13] - 2026-07-15
+
+### Fixed
+
+- **Ship compiled `dist/index.js` bundle** — OpenClaw 2026.7.1 plugin convergence rejects
+  TypeScript-only entries (`package install requires compiled runtime output`) and the
+  gateway refuses to become ready, falling into a crash loop. The plugin entry
+  (`openclaw.extensions`) now points at an esbuild ESM bundle committed to the repo;
+  rebuild with `npm run build` after changing TypeScript sources before deploying.
+
 ## [1.5.11] - 2026-03-30
 
 ### Added
