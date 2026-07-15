@@ -4,6 +4,7 @@
 
 ## 状态
 
+- ✅ OpenClaw 2026.7.1 升级（2026-07-15）— Node 22.23.1、插件收敛要求编译产物（dist/index.js 打包 + npm 目录 symlink 领养）、部署流程新增 build 步骤，详见升级记录
 - ✅ OpenClaw 2026.5.18 升级（2026-05-20）— Discord/acpx/weixin 外部化、Bedrock 清理、Discord READY 超时调优、bootstrap 文件大瘦身、orphan session 归档 1.25 GB，详见升级记录
 - ✅ OpenClaw 2026.4.22 升级（2026-04-24）— 修复 reply dispatcher 流式末尾重复发送，详见升级记录
 - 🔄 待办: 单元测试、CI/CD
@@ -12,13 +13,13 @@
 
 | 信息 | 值 |
 |------|-----|
-| NPM 包 | `@yaoyuanchao/dingtalk` v1.7.12 |
+| NPM 包 | `@yaoyuanchao/dingtalk` v1.7.13（npm 上仍是 1.7.12 TS-only，待发布带 dist 的新版） |
 | GitHub | https://github.com/akedia/dingtalk-clawdbot |
 | 远端服务器 | `ssh root@172.20.90.45`，运行用户 `clawd` |
 | Gateway 管理 | `openclaw gateway restart/stop/start/status` |
-| 插件升级 | **不要用** `openclaw plugins update dingtalk`（会覆盖为 npm 版本），用 git pull |
+| 插件升级 | **不要用** `openclaw plugins update dingtalk`（会覆盖为 npm 版本），用 git pull；改 .ts 后**必须重新打包 dist**（见 deploy skill） |
 | 模型 | `onehub-claude/claude-sonnet-5`（main/clawd2；agents 默认 `onehub-gemini/gemini-3.5-flash`，qiang 继承默认。via onehub，不需要代理） |
-| OpenClaw 版本 | `2026.6.11`（切 Sonnet 5 时顺带升级；2026-07-15 计划升 2026.7.1） |
+| OpenClaw 版本 | `2026.7.1`（2026-07-15 升级；Node 22.23.1） |
 | 外部插件 | `@openclaw/discord` / `@openclaw/acpx` / `@tencent-weixin/openclaw-weixin@2.4.3`（5.x 起 bundle 拆离） |
 | Agent 列表 | `main`（Jax）、`qiang`（QiangBot）、`clawd2`（Clawd2）— 共享同一 runtime |
 | 本地分支 | `master` |
@@ -109,7 +110,14 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 - OpenClaw health-monitor 每 5 分钟检查一次，检测到 `running: false` 会触发 auto-restart 循环（最多 10 次，指数退避）
 - 日志里每 300s 左右出现一次 `Heartbeat timeout, forcing reconnect` 是正常的 — SDK 默认 idle 超时触发的保活重连，不代表异常
 
-### OpenClaw 2026.5.18（当前版本）
+### OpenClaw 2026.7.1（当前版本）
+
+- **插件必须有编译产物**：plugin convergence 在 gateway readiness 前运行，TS-only entry 会被拒。本插件入口是 `dist/index.js`（esbuild bundle，见 deploy skill 的 build 步骤）；**服务器上直接改 .ts 不再生效**
+- **npm 目录 symlink 不能动**：`~/.openclaw/npm/node_modules/@yaoyuanchao/dingtalk` → git checkout 的软链，是收敛"领养"安装记录的依据
+- **迁移 fail-closed**：任何 legacy state 迁移警告都会让 gateway 拒绝 ready 并 crash-loop，恢复路径是 `doctor --fix` / 归档冲突的 legacy 文件
+- Node 要求 ≥22.22.3 <23 或 ≥24.15.0（当前 22.23.1，nodesource deb）
+
+### OpenClaw 2026.5.18（历史）
 - `openclaw doctor --fix` 可能向 channel 配置注入平台级键（如 `allowFrom`、`dmPolicy`），插件 Zod schema 用 `.passthrough()` 兼容；升级后必须 backup vs current 完整 diff
 - **5.x 起 Discord/acpx/weixin 已外部化**：需 `openclaw plugins install @openclaw/discord` / `@openclaw/acpx` / `@tencent-weixin/openclaw-weixin@2.4.3` 单独装
 - **Discord channel** 必须配 `gatewayReadyTimeoutMs: 45000`（默认 15000 在 event loop 饱和时不够；2026-05-20 实测踩坑）
@@ -117,6 +125,22 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 - LAN 绑定的 gateway 需要 `gateway.controlUi.allowedOrigins` 或 `dangerouslyAllowHostHeaderOriginFallback: true`（2026.2.23 起要求）
 
 ## 升级记录
+
+### 2026-07-15: OpenClaw 2026.6.11 → 2026.7.1（含服务中断 ~1.5h，教训多）
+
+**触发原因**：获得 Sonnet 5 原生 catalog 支持（PR #98254）等。前一天已完成风险评估 + maxTokens 调优（16384→64000）。
+
+**连环踩坑与修复**（按时间序）：
+1. **Node engine 硬拦**：7.1 要求 node ≥22.22.3，服务器 22.22.0（nodesource deb）。npm install 只警告不阻断，但 CLI/gateway 硬拒启动 → `apt-get install nodejs` 升到 22.23.1。**教训：npm install -g 完成 ≠ 升级完成，中间态下网关一旦重启就起不来，动手前先核对 engine 要求**
+2. **fail-closed 迁移**：7.1 起状态迁移在 gateway readiness 之前跑，任何 legacy 迁移警告都拒绝 ready 并 crash-loop。踩中 `memory/.dreams/short-term-recall.json`（SQLite 已有数据、导入跳过、源文件残留）→ 归档到 `~/clawd/.archive/memory-dreams-2026-07-15/` 解决
+3. **插件收敛（plugin convergence）是本次最大坑**：7.1 在 readiness 前对每个"已配置但无安装记录"的插件执行自动安装修复。DingTalk 是 git checkout、从无安装记录 → 收敛从 ClawHub/npm 下载 1.7.12（TS-only）→ 撞新规则"包安装必须有编译产物"→ fail-closed 死循环。**试过无效的**：plugins.load.paths 注册、删 plugins.entries.dingtalk、manifest 改 defaultChoice=local、删 manifest install 块（spec 来自持久化快照不是活 manifest）。**最终解法（两件套）**：
+   - 仓库改为携带编译产物：esbuild 打包 `dist/index.js`（ESM bundle，dingtalk-stream/zod external），`openclaw.extensions` 指向它（commit 5b4672f）
+   - `ln -s ~/.openclaw/extensions/dingtalk ~/.openclaw/npm/node_modules/@yaoyuanchao/dingtalk` — 收敛的 adoptExistingNpmPackage 路径直接领养现有包生成安装记录，不再下载
+4. **dist 化的连带后果**：服务器上曾有一处未提交的 jiti 热修（quoted-file spaceId 响应结构适配）在切换到 dist 后失效 → 已收进仓库并重新打包（0e94b96 + 02b8aa2）。**教训：切 dist 后服务器改 .ts 无效，所有修改必须走本地 build + git 部署**
+5. doctor --fix 顺带迁移了三个 agent 的 auth-profiles JSON → SQLite（有 .bak 备份）；acpx/discord 从 2026.5.18 更新到 2026.7.1
+
+**升级收益**：Sonnet 5/Mythos 5 原生 catalog、崩溃循环保护（EX_CONFIG + control-plane-safe mode）、大量 channel/dispatcher 修复
+**遗留事项**：npm 发布 1.7.13（带 dist，让收敛的 npm 路径也能成功）；`canonicalModelId` hack 可评估移除；service 文件仍是 2026.3.13 生成（doctor 建议 --repair）；memory search provider=openai 缺 API key 警告
 
 ### 2026-05-20: OpenClaw 2026.4.22 → 2026.5.18 + 大扫除
 
