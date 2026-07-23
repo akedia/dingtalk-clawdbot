@@ -233,6 +233,28 @@ ssh root@172.20.90.45 "sudo -u clawd \
 
 ---
 
+## 服务器备份（clawd 全量备份）
+
+**机制**（2026-07-23 重写为 v2）：clawd crontab 每 2 小时执行 `/home/clawd/clawd/scripts/backup_agent.sh`，
+维护 `/home/clawd/backups/mirror/` 明文文件镜像并 git 增量推送到 **private** repo
+`github.com:akedia/clawdbot-backups`。换机还原手册见该 repo 根目录 `RESTORE.md`。
+
+**镜像覆盖**：`openclaw.json`（含全部凭证）、identity、cron、exec-approvals、clawd 工作区
+（顶层 *.md + memory/scripts/config/data/skills，排除 node_modules 等）、systemd user units、
+crontab 导出、版本清单（node/openclaw/npm 全局/extensions 的 git commit 或 npm 版本）。
+
+**不进远端的**：三个 agent 的会话库 `openclaw-agent.sqlite`（main 2.3G 超 GitHub 单文件
+100M 限制）——脚本每日用 `sqlite3 .backup` 做一致性快照到 `/home/clawd/backups/local-sqlite/`
+（仅本地防损坏，机器全毁则丢会话流水；长期记忆在 mirror 的 memory/ 里不受影响）。
+
+**检查备份是否正常**：`tail /home/clawd/backups/backup.log`，每轮应见
+`✓ GitHub 同步成功` + `本次备份全部成功`；任何 `✗` 行即失败项。
+
+**历史教训**（v1，2026-07-23 发现）：脚本引用改名前的 `.openclaw/clawdbot.json` 且
+`2>/dev/null` 吞错，导致主配置一年多从未进备份、日志却天天"备份完成"；且每轮提交
+不可增量的 tar.gz，把 repo 撑到 7.4GB（旧 tar blob 仍在 git 历史里，已停止增长）。
+v1 脚本留档：`backup_agent.sh.v1.bak`。
+
 ## 已知问题
 
 ### SDK 报错 `Cannot read properties of undefined (reading 'some')`
