@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.14] - 2026-09-01
+
+### Fixed
+
+- **OpenClaw 2026.8.1 compatibility: live runtime config per dispatch** — 2026.8.1 binds
+  prepared-model catalog owners to the current runtime config generation. Passing the
+  boot-time `runtime.config` snapshot to `dispatchReplyFromConfig` made every DingTalk
+  message fail with `PreparedModelCatalogConfigReplacedError` (thinking indicator sent,
+  then immediately recalled) after any hot config publication. The dispatch path now
+  resolves `getRuntimeConfig()` from `openclaw/plugin-sdk/config-runtime` per message,
+  falling back to the captured snapshot on runtimes without that export. Deployments
+  from a git checkout need `node_modules/openclaw` in the extension directory resolving
+  to the installed OpenClaw package (managed npm installs get this peer link automatically).
+
 ## [1.7.13] - 2026-07-15
 
 ### Fixed
