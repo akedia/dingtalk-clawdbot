@@ -1,12 +1,7 @@
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res, err) => function __init() {
-  if (err) throw err[0];
-  try {
-    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-  } catch (e) {
-    throw err = [e], e;
-  }
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
 var __export = (target, all) => {
   for (var name in all)
@@ -1537,6 +1532,22 @@ async function resolveQuotedFile(config, params, log) {
 import * as fs4 from "fs";
 import * as path4 from "path";
 import * as os4 from "os";
+var cachedGetRuntimeConfig;
+async function resolveLiveDispatchConfig(fallbackCfg) {
+  if (cachedGetRuntimeConfig === void 0) {
+    try {
+      const mod = await import("openclaw/plugin-sdk/config-runtime");
+      cachedGetRuntimeConfig = typeof mod?.getRuntimeConfig === "function" ? mod.getRuntimeConfig : null;
+    } catch {
+      cachedGetRuntimeConfig = null;
+    }
+  }
+  try {
+    return cachedGetRuntimeConfig?.() ?? fallbackCfg;
+  } catch {
+    return fallbackCfg;
+  }
+}
 var DEDUP_MAX_SIZE = 1e3;
 var DEDUP_TTL_MS = 10 * 60 * 1e3;
 var processedMessageIds = /* @__PURE__ */ new Map();
@@ -2994,9 +3005,10 @@ ${AT_MENTION_HINT}` : AT_MENTION_HINT : void 0;
       }
     }
   });
+  const dispatchCfg = await resolveLiveDispatchConfig(cfg);
   try {
     log?.info?.("[dingtalk] dispatchReplyFromConfig started for " + deliverQueueKey);
-    await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
+    await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg: dispatchCfg, dispatcher, replyOptions });
     log?.info?.("[dingtalk] dispatchReplyFromConfig completed for " + deliverQueueKey);
   } finally {
     try {

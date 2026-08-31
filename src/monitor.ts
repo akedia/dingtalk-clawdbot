@@ -8,6 +8,33 @@ import * as path from "path";
 import * as os from "os";
 
 // ============================================================================
+// Live runtime config resolution.
+// OpenClaw 2026.8.1+ binds prepared-model catalog owners to the CURRENT runtime
+// config generation; any hot config publication advances the generation, and a
+// dispatch carrying the boot-time cfg snapshot then fails permanently with
+// PreparedModelCatalogConfigReplacedError. Fetch the live config per dispatch;
+// fall back to the captured cfg on older runtimes without this SDK export.
+// ============================================================================
+
+let cachedGetRuntimeConfig: (() => any) | null | undefined;
+
+async function resolveLiveDispatchConfig(fallbackCfg: any): Promise<any> {
+  if (cachedGetRuntimeConfig === undefined) {
+    try {
+      const mod: any = await import("openclaw/plugin-sdk/config-runtime");
+      cachedGetRuntimeConfig = typeof mod?.getRuntimeConfig === "function" ? mod.getRuntimeConfig : null;
+    } catch {
+      cachedGetRuntimeConfig = null;
+    }
+  }
+  try {
+    return cachedGetRuntimeConfig?.() ?? fallbackCfg;
+  } catch {
+    return fallbackCfg;
+  }
+}
+
+// ============================================================================
 // Message Deduplication - prevent duplicate processing after Stream reconnect.
 // DingTalk re-delivers messages that weren't ACK'd before disconnect using the
 // same protocol messageId, so we track recently processed IDs.
@@ -1941,10 +1968,11 @@ async function dispatchWithFullPipeline(params: {
     },
   });
 
-  // 9. Dispatch reply from config
+  // 9. Dispatch reply from config (live config — see resolveLiveDispatchConfig)
+  const dispatchCfg = await resolveLiveDispatchConfig(cfg);
   try {
     log?.info?.("[dingtalk] dispatchReplyFromConfig started for " + deliverQueueKey);
-    await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyOptions });
+    await rt.channel.reply.dispatchReplyFromConfig({ ctx, cfg: dispatchCfg, dispatcher, replyOptions });
     log?.info?.("[dingtalk] dispatchReplyFromConfig completed for " + deliverQueueKey);
   } finally {
     // OpenClaw 2026.4+ moved dispatcher.markComplete() + waitForIdle() out of
