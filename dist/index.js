@@ -3689,14 +3689,15 @@ ${imageMarkdown}` : imageMarkdown;
     }
   },
   gateway: {
-    async startAccount({ account, signal, setStatus }) {
+    async startAccount({ account, signal, abortSignal, setStatus }) {
+      const stopSignal = abortSignal ?? signal;
       const runtime = getDingTalkRuntime();
       const log = runtime.log?.child?.({ channel: "dingtalk", account: account.accountId }) ?? runtime.log ?? console;
       const cfg = runtime.config;
       log.info?.("[dingtalk] Starting Stream connection...");
       runtime.channel?.activity?.record?.("dingtalk", account.accountId, "start");
-      if (signal) {
-        signal.addEventListener("abort", () => {
+      if (stopSignal) {
+        stopSignal.addEventListener("abort", () => {
           runtime.channel?.activity?.record?.("dingtalk", account.accountId, "stop");
         }, { once: true });
       }
@@ -3704,7 +3705,7 @@ ${imageMarkdown}` : imageMarkdown;
         await startDingTalkMonitor({
           account,
           cfg,
-          abortSignal: signal,
+          abortSignal: stopSignal,
           log,
           setStatus
         });

@@ -513,7 +513,10 @@ export const dingtalkPlugin = {
   },
 
   gateway: {
-    async startAccount({ account, signal, setStatus }) {
+    async startAccount({ account, signal, abortSignal, setStatus }) {
+      // OpenClaw's ChannelGatewayContext passes `abortSignal`; older builds used `signal`.
+      // Without it the monitor never stops on channel restart and leaks a Stream instance.
+      const stopSignal: AbortSignal | undefined = abortSignal ?? signal;
       const runtime = getDingTalkRuntime();
       const log = runtime.log?.child?.({ channel: 'dingtalk', account: account.accountId }) ?? runtime.log ?? console;
       const cfg = runtime.config;
@@ -524,8 +527,8 @@ export const dingtalkPlugin = {
       (runtime as any).channel?.activity?.record?.('dingtalk', account.accountId, 'start');
 
       // Record stop activity on abort
-      if (signal) {
-        signal.addEventListener('abort', () => {
+      if (stopSignal) {
+        stopSignal.addEventListener('abort', () => {
           (runtime as any).channel?.activity?.record?.('dingtalk', account.accountId, 'stop');
         }, { once: true });
       }
@@ -534,7 +537,7 @@ export const dingtalkPlugin = {
         await startDingTalkMonitor({
           account,
           cfg,
-          abortSignal: signal,
+          abortSignal: stopSignal,
           log,
           setStatus,
         });
