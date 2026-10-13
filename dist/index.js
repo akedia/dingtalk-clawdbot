@@ -2783,13 +2783,16 @@ async function dispatchMessageInternal(params) {
     }
   }
   let actualCfg = cfg;
-  if (cfg && typeof cfg.loadConfig === "function") {
-    try {
+  try {
+    if (typeof cfg?.current === "function") {
+      actualCfg = cfg.current();
+    } else if (typeof cfg?.loadConfig === "function") {
       actualCfg = await cfg.loadConfig();
-    } catch (err) {
-      log?.info?.("[dingtalk] Failed to load config: " + err);
     }
+  } catch (err) {
+    log?.warn?.("[dingtalk] Failed to load config: " + err);
   }
+  actualCfg = await resolveLiveDispatchConfig(actualCfg);
   const hasFullPipeline = !!(runtime?.channel?.routing?.resolveAgentRoute && runtime?.channel?.reply?.finalizeInboundContext && runtime?.channel?.reply?.createReplyDispatcherWithTyping && runtime?.channel?.reply?.dispatchReplyFromConfig);
   let typingCleaned = false;
   const cleanupTyping = async () => {
@@ -2931,10 +2934,13 @@ async function dispatchWithFullPipeline(params) {
     channel: "dingtalk",
     accountId: account.accountId,
     agentId: matchedAgentId,
+    // resolveAgentRoute ignores `agentId`; it matches cfg.bindings itself and
+    // falls back to `defaultAgentId`.
+    defaultAgentId: matchedAgentId,
     peer: { kind: peerKind, id: `${account.accountId}:${peerId}` }
   });
   const sessionKey = route.sessionKey;
-  log?.info?.(`[dingtalk] Route resolved: agentId=${matchedAgentId} sessionKey=${sessionKey} accountId=${account.accountId}`);
+  log?.info?.(`[dingtalk] Route resolved: agentId=${matchedAgentId} routeAgentId=${route.agentId} sessionKey=${sessionKey} accountId=${account.accountId}`);
   const storePath = rt.channel.session?.resolveStorePath?.(cfg?.session?.store, { agentId: matchedAgentId });
   const envelopeOptions = rt.channel.reply?.resolveEnvelopeFormatOptions?.(cfg) ?? {};
   const previousTimestamp = rt.channel.session?.readSessionUpdatedAt?.({ storePath, sessionKey });

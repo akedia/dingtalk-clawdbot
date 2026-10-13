@@ -1718,15 +1718,21 @@ async function dispatchMessageInternal(params: {
     }
   }
 
-  // Load actual config if cfg is a config manager
+  // `cfg` is the plugin runtime's config facade, not the config itself: current
+  // OpenClaw exposes `current()`, older builds `loadConfig()`. Routing reads
+  // `bindings` from it — passing the facade through silently routed every
+  // non-default account (qiang, clawd2) to the main agent.
   let actualCfg = cfg;
-  if (cfg && typeof cfg.loadConfig === "function") {
-    try {
+  try {
+    if (typeof cfg?.current === "function") {
+      actualCfg = cfg.current();
+    } else if (typeof cfg?.loadConfig === "function") {
       actualCfg = await cfg.loadConfig();
-    } catch (err) {
-      log?.info?.("[dingtalk] Failed to load config: " + err);
     }
+  } catch (err) {
+    log?.warn?.("[dingtalk] Failed to load config: " + err);
   }
+  actualCfg = await resolveLiveDispatchConfig(actualCfg);
 
   // Check if the full Clawdbot Plugin SDK pipeline is available
   const hasFullPipeline = !!(
@@ -1894,11 +1900,14 @@ async function dispatchWithFullPipeline(params: {
     channel: 'dingtalk',
     accountId: account.accountId,
     agentId: matchedAgentId,
+    // resolveAgentRoute ignores `agentId`; it matches cfg.bindings itself and
+    // falls back to `defaultAgentId`.
+    defaultAgentId: matchedAgentId,
     peer: { kind: peerKind, id: `${account.accountId}:${peerId}` },
   });
   const sessionKey = route.sessionKey;
 
-  log?.info?.(`[dingtalk] Route resolved: agentId=${matchedAgentId} sessionKey=${sessionKey} accountId=${account.accountId}`);
+  log?.info?.(`[dingtalk] Route resolved: agentId=${matchedAgentId} routeAgentId=${route.agentId} sessionKey=${sessionKey} accountId=${account.accountId}`);
 
   // 2. Resolve store path
   const storePath = rt.channel.session?.resolveStorePath?.(cfg?.session?.store, { agentId: matchedAgentId });
