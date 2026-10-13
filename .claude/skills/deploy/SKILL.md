@@ -1,7 +1,7 @@
 ---
 name: deploy
 description: |
-  Deploy the DingTalk plugin to production server via Git push + pull + gateway restart.
+  Deploy the DingTalk plugin to production server via Git push + pull + `openclaw plugins reload`.
   Handles the full deploy cycle with proper systemd environment variables.
   Triggers: "deploy", "push and deploy", "update server",
   "部署", "推送部署", "更新服务器"
@@ -9,7 +9,11 @@ description: |
 
 # Deploy DingTalk Plugin
 
-Push code to GitHub, pull on remote server, and restart the Gateway.
+Push code to GitHub, pull on remote server, and hot-reload the plugin (no gateway restart).
+
+Since OpenClaw 2026.10.2 (2026-10-13) the plugin is a **linked install** (`source: path`)
+of the git checkout at `/home/clawd/plugins/dingtalk`: doctor, `openclaw update` and
+`plugins update --all` skip it, and `plugins reload` swaps the code in place.
 
 ## IMPORTANT: Git deployment, NOT npm
 
@@ -23,7 +27,7 @@ is not rebuilt into dist/index.js will be silently ignored at runtime.**
 
 ```bash
 cd "e:\dingtalk-clawdbot"
-npx -y esbuild index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/index.js --external:dingtalk-stream --external:zod
+npm run build
 git add dist/index.js
 ```
 
@@ -42,16 +46,20 @@ Ensure all changes (including dist/index.js) are committed before deploying.
 git -C "e:\dingtalk-clawdbot" push origin master
 ```
 
-## Step 4: Pull on Remote + Restart Gateway
+## Step 4: Pull on Remote + Reload Plugin
 
 ```bash
 ssh root@172.20.90.45 "sudo -u clawd bash -c '
-  cd /home/clawd/.openclaw/extensions/dingtalk && git pull
-' && sudo -u clawd \
-  XDG_RUNTIME_DIR=/run/user/1001 \
-  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
-  openclaw gateway restart"
+  cd /home/clawd/plugins/dingtalk && git pull --ff-only &&
+  cd ~ && XDG_RUNTIME_DIR=/run/user/1001 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
+    timeout 300 openclaw plugins reload dingtalk --json
+'"
 ```
+
+The reload receipt lists `sourceDigests.dingtalk`; it changes when new code was picked up.
+The old Stream instance is stopped via `abortSignal` before the new one starts. A full
+`openclaw gateway restart` also works but costs a 10+ minute cold start plus up to ~15
+minutes of main-agent background DB inspection, during which the main agent cannot answer.
 
 ## Step 5: Verify Deployment
 
@@ -81,12 +89,16 @@ for line in sys.stdin:
 
 - `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are REQUIRED for gateway commands
 - Gateway runs as `clawd` (UID 1001), not root
-- Remote plugin path: `/home/clawd/.openclaw/extensions/dingtalk/`
+- Remote plugin path: `/home/clawd/plugins/dingtalk/` (linked install, listed in
+  `plugins.load.paths`). Do NOT move it back under `~/.openclaw/extensions/` — 10.x manages
+  that directory and a checkout there conflicts with `plugins install -l`
 - Do NOT use `su - clawd`（missing systemd session）
 - Do NOT use `pkill` or `kill` to manage gateway
 - Do NOT use `openclaw plugins update dingtalk`（overwrites Git with npm）
 - Do NOT edit server-side .ts files as hotfixes — since 2026.7.1 the runtime loads
   `dist/index.js`; server TS edits are silently ignored. Fix locally, rebuild, deploy.
-- `~/.openclaw/npm/node_modules/@yaoyuanchao/dingtalk` on the server is a SYMLINK to
-  the git checkout (required by 2026.7.1 plugin convergence adoption) — never replace
-  it with a real npm install
+- The old npm-symlink adoption hack (`~/.openclaw/npm/node_modules/@yaoyuanchao/dingtalk`)
+  was removed on 2026-10-13: under 10.x that npm record made doctor report "install
+  incomplete", and `doctor --fix` / `openclaw update` would replace the plugin with npm's
+  older release. Do not recreate it
+- Plugin caches live in `~/.openclaw/dingtalk-cache/` (1.7.18+), not in the checkout

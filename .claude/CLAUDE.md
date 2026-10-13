@@ -1,9 +1,10 @@
 # DingTalk Clawdbot Plugin
 
-> DingTalk Channel Plugin for ClawdBot/OpenClaw（`@yaoyuanchao/dingtalk` v1.7.16）
+> DingTalk Channel Plugin for ClawdBot/OpenClaw（`@yaoyuanchao/dingtalk` v1.7.18）
 
 ## 状态
 
+- ✅ OpenClaw 2026.10.2 + 插件 1.7.18 + linked install（2026-10-13）— 插件改为 `plugins install -l ~/plugins/dingtalk`（10.x 下旧的 npm-symlink 领养会被 doctor 判 install incomplete 并可能被 npm 旧版覆盖）；修复非默认账号路由到 main 的缺陷（1.7.17）；缓存移出安装目录（1.7.18）；systemd 停止策略 330s/KillMode=mixed + 3GB 堆上限；隔离 staging 全量预演，详见升级记录
 - ✅ OpenClaw 2026.9.9 + Node 24.21.0 + 插件 1.7.16（2026-10-13）— 9.3 起弃用 Node 22；10.x 删除 `plugin-sdk/config-runtime`，插件改读 `runtime-config-snapshot`；agent 库 schema v19→v24 需停机 `doctor --fix`；同日切 Sonnet 5.5、下线 qiang agent，详见升级记录
 - ✅ OpenClaw 2026.9.2 升级 + 插件 1.7.15（2026-09-07）— 修复 `startAccount` 读 `signal` 而运行时传 `abortSignal` 导致的 Stream 实例泄漏（09-05 网关因此 heap 崩溃）；9.1/9.2 无 Breaking；顺带修 memory.search provider、删过期 my-coffee MCP、禁用冗余 GRFal 清理 cron、清理泄漏的 acpx 孤儿进程，详见升级记录
 - ✅ weixin 插件卸载 + OpenClaw 2026.8.2 评估（2026-09-02）— 8.2 无 Breaking，未升级；插件依赖的 `plugin-sdk/config-runtime` 已被标废弃需迁到 `runtime-config-snapshot`，详见升级记录
@@ -17,14 +18,14 @@
 
 | 信息 | 值 |
 |------|-----|
-| NPM 包 | `@yaoyuanchao/dingtalk` v1.7.16（git 已部署 2026-10-13；npm 上仍是 1.7.14，待发布） |
+| NPM 包 | `@yaoyuanchao/dingtalk` v1.7.18（git 已部署 2026-10-13；npm 上仍是 1.7.14，待发布） |
 | GitHub | https://github.com/akedia/dingtalk-clawdbot |
 | 远端服务器 | `ssh root@172.20.90.45`，运行用户 `clawd` |
 | Gateway 管理 | `openclaw gateway restart/stop/start/status` |
-| 插件升级 | **不要用** `openclaw plugins update dingtalk`（会覆盖为 npm 版本），用 git pull；改 .ts 后**必须重新打包 dist**（见 deploy skill） |
+| 插件部署 | linked install（`source: path`）：服务器 checkout 在 `~/plugins/dingtalk`，`git pull` 后 `openclaw plugins reload dingtalk` 热替换，无需重启网关；改 .ts 后**必须重新打包 dist**（见 deploy skill）。不要把 checkout 放回 `~/.openclaw/extensions/`，不要重建 npm symlink |
 | 模型 | `onehub-claude/claude-sonnet-5-5`（main/clawd2，2026-10-13 切换，手动声明 `canonicalModelId: claude-sonnet-5`；agents 默认 `onehub-gemini/gemini-3.5-flash`（onehub 实际服务 3.6-flash）（cron 等未指定模型的任务用它）。via onehub，不需要代理。onehub 无 Haiku 5.x） |
-| OpenClaw 版本 | `2026.9.9`（2026-10-13 升级；Node 24.21.0，nodesource `node_24.x`）。10.x 暂缓（见升级记录） |
-| 外部插件 | `@openclaw/discord@2026.9.9` / `@openclaw/acpx@2026.9.9`（weixin 已于 2026-09-02 卸载） |
+| OpenClaw 版本 | `2026.10.2`（2026-10-13 升级；Node 24.21.0，nodesource `node_24.x`；state schema v20、agent v24，不可回退二进制只能还原备份） |
+| 外部插件 | `@openclaw/discord@2026.10.2` / `@openclaw/acpx@2026.10.2`（weixin 已于 2026-09-02 卸载） |
 | Agent 列表 | `main`（Jax）、`clawd2`（Clawd2）— 共享同一 runtime（qiang/QiangBot 2026-10-13 下线，数据归档在 `~/.archive/qiang-removed-2026-10-13/`） |
 | 本地分支 | `master` |
 
@@ -114,7 +115,19 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 - OpenClaw health-monitor 每 5 分钟检查一次，检测到 `running: false` 会触发 auto-restart 循环（最多 10 次，指数退避）
 - 日志里每 300s 左右出现一次 `Heartbeat timeout, forcing reconnect` 是正常的 — SDK 默认 idle 超时触发的保活重连，不代表异常
 
-### OpenClaw 2026.9.2（当前版本，2026-09-07 升级）
+### OpenClaw 2026.10.2（当前版本，2026-10-13 升级）
+
+- **重启代价很高**：冷启动到 `gateway ready` 约 11 分钟（listening 后还要 ~3 分钟才起 channel），之后 main agent 库（1.3 GB）后台 inspection 又要 ~15 分钟，期间 main 会话不可用（cron 报 "has not completed startup inspection"，消息无法处理）；clawd2 约 3 分钟。日志里 `agent database recovered after background inspection and preparation` 才算真正可用。**部署插件一律用 `plugins reload`，别重启网关**
+- 启动时 `secrets.degraded ... cold` 警告在 agent inspection 完成后自愈，不用 `secrets reload`
+- 10.x 日志主要写文件 `/tmp/openclaw/openclaw-YYYY-MM-DD.log`，journal 内容很少
+- 插件 linked install 不继承官方包信任；若某 channel 要求 trusted plugin state 会被拒启动（钉钉不需要，已实测）
+- `doctor --non-interactive`（不带 --fix）也会做改动：会自动安装被配置隐式引用但缺失的插件（staging 实测装了 acpx）
+- `OPENCLAW_PROFILE` 在 9.9 不生效（会落回 `~/.openclaw`）；隔离环境必须显式设 `OPENCLAW_STATE_DIR` + `OPENCLAW_CONFIG_PATH`，日志用 `logging.file` 另指
+- 原生 provider compaction（#168164）只对 provider=`anthropic` 直连生效，onehub 不触发
+- `canonicalModelId: claude-sonnet-5` 让 sonnet-5-5 走 Sonnet 5 的能力映射（thinking 档位、tool_choice 分支），删除需单独验证
+- 遗留：`agents/{claude,codex,openclaw}` 三个非 roster 旧目录仍被启动 inspection 扫描；weixin 安装记录残留
+
+### OpenClaw 2026.9.2（历史）
 
 - **9.1/9.2 无 Breaking**，Node 要求不变，`plugin-sdk/config-runtime` 子路径仍在（但仍应迁到 `runtime-config-snapshot`）。9.1 起迁移警告改为降级运行而非拒启；`cron.skipMissedJobs` 可选；`channels.<id>.enabled:false` 不再加载该插件；9.2 把长转录/磁盘读移出事件循环、ACP 子进程随父运行结束而终止
 - **CLI 冷缓存会彻底挂死**：网关停着时 `plugins install @openclaw/discord` 两次各跑 8–9 分钟无输出、`doctor --fix --non-interactive` 9 分钟无输出（只打了配置警告），全部 timeout；acpx 却 3 分钟装完。网关起来跑热缓存后同一条 discord install 100 秒完成。**升级顺序建议：先起网关再装插件，再重启一次加载**，doctor 可以不跑（9.2 网关启动自迁移，只报 weixin 残留记录警告）
@@ -157,6 +170,34 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 - LAN 绑定的 gateway 需要 `gateway.controlUi.allowedOrigins` 或 `dangerouslyAllowHostHeaderOriginFallback: true`（2026.2.23 起要求）
 
 ## 升级记录
+
+### 2026-10-13（下午）: OpenClaw 2026.9.9 → 2026.10.2 + 插件 1.7.17/1.7.18（计划内，Jax 不可用 ~38 分钟、Clawd2 ~27 分钟）
+
+**调研**（三路并行审 10.2 包源码/文档 + 线上核实）：sealed installation generations 只针对核心且需手动 adopt；插件每次加载 capture 到 `<state>/tmp/plugin-captures` 再 import，git pull 后 restart/reload 能拿到新代码；provider-native compaction 对 onehub 不触发；配置 schema 全通过；state v19→v20 启动自动迁移、agent 库不变。
+
+**顺带查出的现存缺陷**：
+- **路由缺陷（3 月后某版本引入）**：`startAccount` 传给 monitor 的 `runtime.config` 是门面 `{current, mutateConfigFile, replaceConfigFile}`，插件只认旧的 `loadConfig()`，路由拿不到 `bindings` → 所有非默认账号回落到 main（`session_windows` 证据：2026-03-25 qiang 账号消息正确进 qiang 库，2026-08-06 进了 main 库）。1.7.17 修复，并在 9.9 真实 core 上用 `plugin-sdk/routing` 的 `resolveAgentRoute` 验证门面→main、真实 cfg→clawd2
+- `formatInboundEnvelope` 早已不在 runtime（只有 `formatAgentEnvelope`），agent 看到的钉钉消息没有发送人/时间信封——未修，待评估
+- `runtime.config.set/delete` 早已不存在（`setAccountEnabled`/`deleteAccount`/onboarding 会抛错），`runtime.log.child` 不存在——未修
+- systemd unit（2026.3.13 生成）`TimeoutStopSec=30` + `KillMode=control-group`，10.x drain 最长 315s 会被 SIGKILL；`patch-dingtalk.conf` ExecStartPost 是 3 月的失效热补丁（改 `~/.npm-global` 下核心文件）
+
+**阶段 1（10:16–10:21）**：新增 drop-in `zz-stop-policy-heap.conf`（`TimeoutStopSec=330`、`KillMode=mixed`、`NODE_OPTIONS=--max-old-space-size=3072`）；`patch-dingtalk.conf` 归档到 `~/.archive/systemd-unit-pre-10x-2026-10-13/`；drop-in 目录与 `~/.config`、`~/.config/systemd` 去组写；含密钥的 `cursor-env.conf`/`gws-env.conf` 改 600；部署 1.7.17 + restart。11:01 那次 stop 实测 drain 等一个 gemini 任务跑完（3 分 20 秒）后干净退出——旧策略会在 30 秒处杀掉。
+
+**阶段 2（staging 预演，全部在 `~/.openclaw-stage` + 端口 19789 + 假钉钉凭证）**：10.2 装在 `~/oc102`（项目级 npm 安装不接受 `--allow-scripts` 参数，要写 `.npmrc`）。结论：
+1. 生产原布局（npm 领养记录 + load.paths）上 10.2 能启动，但 doctor 报 `install incomplete: package.json is missing / dependencies missing`，属可修复诊断 → `doctor --fix`/`openclaw update` 会按 `spec: @yaoyuanchao/dingtalk` 从 npm 拉 1.7.14 覆盖
+2. 插件 capture 后 `import("openclaw/plugin-sdk/runtime-config-snapshot")` 解析到宿主 10.2 的 `getRuntimeConfig`；`config-runtime` 报 `ERR_PACKAGE_PATH_NOT_EXPORTED`（1.7.16 必需）
+3. `plugins install -l` 不能指向 `<state>/extensions/<id>`（"plugin already exists … delete it first"，`--force` 无效）→ checkout 必须移出 extensions
+4. link 后：记录 `source: path`、版本正确；doctor / doctor --fix 不碰；`plugins update --all` 输出 `Skipping "dingtalk" (source: path)`；`plugins reload dingtalk` 不重启即换代码且旧 Stream 正常停止；10.2 + onehub + sonnet-5-5 agent turn OK
+5. 插件缓存写死在 `~/.openclaw/extensions/dingtalk/.cache`（staging 共用了生产缓存，checkout 移走后还会重建 extensions/dingtalk）→ 1.7.18 改到 `<state>/dingtalk-cache/`
+
+**阶段 3（生产）**：
+1. 10:55 Jax 真实消息验证 1.7.17（`routeAgentId=main`，回复正常）；11:01 部署 1.7.18 代码 + 缓存复制到 `~/.openclaw/dingtalk-cache/`
+2. 11:01 stop（drain 4 分钟）→ 冷备份 `~/.archive/pre-2026.10.2-2026-10-13/`（2.9 GB）→ `npm i -g openclaw@2026.10.2 --allow-scripts=...`
+3. 网关停着时：checkout `mv` 到 `~/plugins/dingtalk`；删 npm symlink；7.1 遗留的 `npm/projects/yaoyuanchao-dingtalk-*` 归档；`openclaw plugins install -l ~/plugins/dingtalk --force --accept-capabilities`（1 分钟）；`config set plugins.load.paths '["/home/clawd/plugins/dingtalk"]'`
+4. 11:14:45 start → 11:22:59 listening → 11:26:06 ready（681 秒），钉钉两账号连上、cron 34 个任务启动；clawd2 11:28:31、main 11:39:45 才完成后台 inspection（期间 cron 对 main 的运行全部被拒）
+5. 11:40 main/clawd2 agent turn 均 OK（sonnet-5-5，无 fallback）；acpx/discord 热安装 10.2
+
+**教训**：10.x 的"重启"成本 = 11 分钟启动 + 最长 15 分钟 main inspection，计划停机要按 30 分钟估；插件部署从此改用 `plugins reload`。staging 隔离必须显式 STATE_DIR（profile 在 9.9 失效，差点让 staging 9.9 去碰生产状态目录——被"another gateway owns this state directory"拦下）。
 
 ### 2026-10-13: OpenClaw 2026.9.2 → 2026.9.9 + Node 22 → 24 + 插件 1.7.16（计划内，服务中断 ~36 分钟）
 
