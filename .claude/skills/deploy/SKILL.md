@@ -56,6 +56,23 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 '"
 ```
 
+**Before reloading, make sure the gateway is not frozen.** On 2026-10-13 a reload issued
+while the main agent DB was running `incremental-vacuum` on the main thread sat queued for
+7 minutes, failed with "plugin lifecycle lease … was lost", and left the old instance's
+cleanup half-done: every later reload failed with "Previous plugin cleanup failed", core
+reported `PluginInstanceUnavailableError` (the DingTalk `message` tool — and thus all cron
+pushes — broke, though inbound replies still worked), and only a gateway restart
+recovered it. Check first:
+
+```bash
+ssh root@172.20.90.45 "tail -c 3000 /tmp/openclaw/openclaw-\$(date +%Y-%m-%d).log | grep -ac 'incremental-vacuum\|liveness heartbeat delayed'"
+```
+
+If that is non-zero, wait a few minutes and re-check. If a reload fails anyway, verify with
+`openclaw channels status --json` and the log for `PluginInstanceUnavailableError`; if
+present, restart the gateway (warm restart reaches `gateway ready` in ~2 minutes, but the
+main agent then needs its background DB inspection before it can answer).
+
 The reload receipt lists `sourceDigests.dingtalk`; it changes when new code was picked up.
 The old Stream instance is stopped via `abortSignal` before the new one starts. A full
 `openclaw gateway restart` also works but costs a 10+ minute cold start plus up to ~15
