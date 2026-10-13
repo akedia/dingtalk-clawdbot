@@ -117,7 +117,8 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 
 ### OpenClaw 2026.10.2（当前版本，2026-10-13 升级）
 
-- **重启代价很高**：冷启动到 `gateway ready` 约 11 分钟（listening 后还要 ~3 分钟才起 channel），之后 main agent 库（1.3 GB）后台 inspection 又要 ~15 分钟，期间 main 会话不可用（cron 报 "has not completed startup inspection"，消息无法处理）；clawd2 约 3 分钟。日志里 `agent database recovered after background inspection and preparation` 才算真正可用。**部署插件一律用 `plugins reload`，别重启网关**
+- **重启代价（2026-10-13 compact 后）**：main 库 1.30 GB → 625 MB、clawd2 233 MB → 121 MB（`openclaw doctor --session-sqlite compact --session-sqlite-all-agents`，网关停着跑，2 分钟），之后 agent 启动 inspection 在 5 秒前台预算内完成，不再有 15 分钟后台 inspection；冷启动到 ready ~5 分钟、热重启 ~2 分钟。compact 前 main 库有 640 MB 空闲页，10.x 在**主线程**跑 `incremental-vacuum` 回收，冻结网关 7 分钟并把同时进行的 `plugins reload` 卡死（见 deploy skill）。空闲页再涨起来时重复 compact
+- 非 roster agent 目录（claude/codex/openclaw/claude-code/qiang）已归档到 `~/.archive/pre-compact-2026-10-13/agents/`；`claude` 是 ACP（`acp.defaultAgent: claude`）的状态目录，下次用 ACP 会重建
 - 启动时 `secrets.degraded ... cold` 警告在 agent inspection 完成后自愈，不用 `secrets reload`
 - 10.x 日志主要写文件 `/tmp/openclaw/openclaw-YYYY-MM-DD.log`，journal 内容很少
 - 插件 linked install 不继承官方包信任；若某 channel 要求 trusted plugin state 会被拒启动（钉钉不需要，已实测）
@@ -125,7 +126,7 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 - `OPENCLAW_PROFILE` 在 9.9 不生效（会落回 `~/.openclaw`）；隔离环境必须显式设 `OPENCLAW_STATE_DIR` + `OPENCLAW_CONFIG_PATH`，日志用 `logging.file` 另指
 - 原生 provider compaction（#168164）只对 provider=`anthropic` 直连生效，onehub 不触发
 - `canonicalModelId: claude-sonnet-5` 让 sonnet-5-5 走 Sonnet 5 的能力映射（thinking 档位、tool_choice 分支），删除需单独验证
-- 遗留：`agents/{claude,codex,openclaw}` 三个非 roster 旧目录仍被启动 inspection 扫描；weixin 安装记录残留
+- 遗留：weixin 安装记录残留；discord 插件仍 9.9；失效的向量索引 `memory_index_chunks_vec_*` 占 ~120 MB（无 embedding 端点）
 
 ### OpenClaw 2026.9.2（历史）
 
