@@ -143,24 +143,28 @@ export const dingtalkPlugin = {
       return resolveDefaultDingTalkAccountId(cfg);
     },
 
+    // Pure config transforms: OpenClaw passes a readonly cfg and persists the
+    // returned copy (runtime.config.set/delete no longer exist).
     setAccountEnabled({ cfg, accountId, enabled }) {
-      const runtime = getDingTalkRuntime();
-      const channel = cfg?.channels?.dingtalk;
-      if (channel?.accounts && accountId && accountId !== 'default') {
-        runtime.config.set(`channels.dingtalk.accounts.${accountId}.enabled`, enabled);
+      const next = structuredClone(cfg ?? {});
+      const channel = ((next.channels ??= {}).dingtalk ??= {});
+      if (channel.accounts && accountId && accountId !== 'default') {
+        (channel.accounts[accountId] ??= {}).enabled = enabled;
       } else {
-        runtime.config.set('channels.dingtalk.enabled', enabled);
+        channel.enabled = enabled;
       }
+      return next;
     },
 
     deleteAccount({ cfg, accountId }) {
-      const runtime = getDingTalkRuntime();
-      const channel = cfg?.channels?.dingtalk;
+      const next = structuredClone(cfg ?? {});
+      const channel = next.channels?.dingtalk;
       if (channel?.accounts && accountId && accountId !== 'default') {
-        runtime.config.delete(`channels.dingtalk.accounts.${accountId}`);
-      } else {
-        runtime.config.delete('channels.dingtalk');
+        delete channel.accounts[accountId];
+      } else if (next.channels) {
+        delete next.channels.dingtalk;
       }
+      return next;
     },
 
     isConfigured(account) {
@@ -513,12 +517,13 @@ export const dingtalkPlugin = {
   },
 
   gateway: {
-    async startAccount({ account, signal, abortSignal, setStatus }) {
+    async startAccount({ account, signal, abortSignal, setStatus, log: ctxLog }) {
       // OpenClaw's ChannelGatewayContext passes `abortSignal`; older builds used `signal`.
       // Without it the monitor never stops on channel restart and leaks a Stream instance.
       const stopSignal: AbortSignal | undefined = abortSignal ?? signal;
       const runtime = getDingTalkRuntime();
-      const log = runtime.log?.child?.({ channel: 'dingtalk', account: account.accountId }) ?? runtime.log ?? console;
+      // The gateway context supplies a channel-scoped log sink; the plugin runtime has no `log`.
+      const log = ctxLog ?? runtime.log ?? console;
       const cfg = runtime.config;
 
       log.info?.('[dingtalk] Starting Stream connection...');
@@ -544,7 +549,7 @@ export const dingtalkPlugin = {
 
         log.info?.('[dingtalk] Stream connection started successfully');
       } catch (err) {
-        log.error?.('[dingtalk] Failed to start Stream', err);
+        log.error?.('[dingtalk] Failed to start Stream: ' + (err instanceof Error ? err.message : String(err)));
         throw err;
       }
     },

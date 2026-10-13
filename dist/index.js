@@ -915,7 +915,16 @@ async function onboardDingTalk(ctx) {
     requireMention,
     messageFormat: "text"
   };
-  await runtime.config.set("channels.dingtalk", config);
+  if (typeof runtime.config?.mutateConfigFile === "function") {
+    await runtime.config.mutateConfigFile({
+      afterWrite: { mode: "auto" },
+      mutate(draft) {
+        (draft.channels ??= {}).dingtalk = config;
+      }
+    });
+  } else {
+    await runtime.config.set("channels.dingtalk", config);
+  }
   ui.success("\n\u2713 \u914D\u7F6E\u5B8C\u6210\uFF01");
   ui.info("\u4E0B\u4E00\u6B65: \u8FD0\u884C clawdbot gateway \u542F\u52A8\u7F51\u5173\n");
   return config;
@@ -3418,23 +3427,27 @@ var dingtalkPlugin = {
     defaultAccountId(cfg) {
       return resolveDefaultDingTalkAccountId(cfg);
     },
+    // Pure config transforms: OpenClaw passes a readonly cfg and persists the
+    // returned copy (runtime.config.set/delete no longer exist).
     setAccountEnabled({ cfg, accountId, enabled }) {
-      const runtime = getDingTalkRuntime();
-      const channel = cfg?.channels?.dingtalk;
-      if (channel?.accounts && accountId && accountId !== "default") {
-        runtime.config.set(`channels.dingtalk.accounts.${accountId}.enabled`, enabled);
+      const next = structuredClone(cfg ?? {});
+      const channel = (next.channels ??= {}).dingtalk ??= {};
+      if (channel.accounts && accountId && accountId !== "default") {
+        (channel.accounts[accountId] ??= {}).enabled = enabled;
       } else {
-        runtime.config.set("channels.dingtalk.enabled", enabled);
+        channel.enabled = enabled;
       }
+      return next;
     },
     deleteAccount({ cfg, accountId }) {
-      const runtime = getDingTalkRuntime();
-      const channel = cfg?.channels?.dingtalk;
+      const next = structuredClone(cfg ?? {});
+      const channel = next.channels?.dingtalk;
       if (channel?.accounts && accountId && accountId !== "default") {
-        runtime.config.delete(`channels.dingtalk.accounts.${accountId}`);
-      } else {
-        runtime.config.delete("channels.dingtalk");
+        delete channel.accounts[accountId];
+      } else if (next.channels) {
+        delete next.channels.dingtalk;
       }
+      return next;
     },
     isConfigured(account) {
       return !!(account.clientId && account.clientSecret);
@@ -3708,10 +3721,10 @@ ${imageMarkdown}` : imageMarkdown;
     }
   },
   gateway: {
-    async startAccount({ account, signal, abortSignal, setStatus }) {
+    async startAccount({ account, signal, abortSignal, setStatus, log: ctxLog }) {
       const stopSignal = abortSignal ?? signal;
       const runtime = getDingTalkRuntime();
-      const log = runtime.log?.child?.({ channel: "dingtalk", account: account.accountId }) ?? runtime.log ?? console;
+      const log = ctxLog ?? runtime.log ?? console;
       const cfg = runtime.config;
       log.info?.("[dingtalk] Starting Stream connection...");
       runtime.channel?.activity?.record?.("dingtalk", account.accountId, "start");
@@ -3730,7 +3743,7 @@ ${imageMarkdown}` : imageMarkdown;
         });
         log.info?.("[dingtalk] Stream connection started successfully");
       } catch (err) {
-        log.error?.("[dingtalk] Failed to start Stream", err);
+        log.error?.("[dingtalk] Failed to start Stream: " + (err instanceof Error ? err.message : String(err)));
         throw err;
       }
     }

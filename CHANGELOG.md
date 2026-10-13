@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.19] - 2026-10-13
+
+### Fixed
+
+- **Config adapter returns the updated config** — `setAccountEnabled` / `deleteAccount` called
+  `runtime.config.set/delete`, which no longer exist, and returned nothing. They are now pure
+  transforms over the readonly `cfg` that return the modified copy for OpenClaw to persist.
+- **Onboarding writes through `runtime.config.mutateConfigFile`** when available.
+- **Use the gateway-provided channel log sink** — `runtime.log.child` does not exist; the
+  monitor now logs through `startAccount`'s `log` (single-string `ChannelLogSink` calls).
+
 ## [1.7.18] - 2026-10-13
 
 ### Changed

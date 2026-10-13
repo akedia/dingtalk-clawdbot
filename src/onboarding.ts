@@ -142,8 +142,17 @@ export async function onboardDingTalk(ctx: { runtime: any; accountId: string }) 
     messageFormat: 'text' as const,
   };
 
-  // Save configuration
-  await runtime.config.set('channels.dingtalk', config);
+  // Save configuration: current OpenClaw writes through mutateConfigFile; legacy runtimes exposed set()
+  if (typeof runtime.config?.mutateConfigFile === 'function') {
+    await runtime.config.mutateConfigFile({
+      afterWrite: { mode: 'auto' },
+      mutate(draft: any) {
+        (draft.channels ??= {}).dingtalk = config;
+      },
+    });
+  } else {
+    await runtime.config.set('channels.dingtalk', config);
+  }
 
   ui.success('\n✓ 配置完成！');
   ui.info('下一步: 运行 clawdbot gateway 启动网关\n');
