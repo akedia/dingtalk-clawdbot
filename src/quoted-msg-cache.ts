@@ -13,7 +13,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
+import { resolveDingTalkCacheFile } from "./cache-dir.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,10 +36,7 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;       // 24 h
 const MAX_ENTRIES_PER_BUCKET = 100;
 const MAX_BUCKETS = 1000;
 
-const CACHE_FILE = path.join(
-  os.homedir(),
-  ".openclaw", "extensions", "dingtalk", ".cache", "quoted-msg-cache.json",
-);
+const CACHE_FILE = resolveDingTalkCacheFile("quoted-msg-cache.json");
 
 // ---------------------------------------------------------------------------
 // In-memory store

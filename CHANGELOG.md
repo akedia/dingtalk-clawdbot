@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.18] - 2026-10-13
+
+### Changed
+
+- **Cache files moved under the OpenClaw state dir** — `msg-cache.json` and
+  `quoted-msg-cache.json` now live in `<OPENCLAW_STATE_DIR or ~/.openclaw>/dingtalk-cache/`
+  instead of `~/.openclaw/extensions/dingtalk/.cache/`. OpenClaw 10.x manages and scans
+  `<state>/extensions/`, linked installs keep the checkout elsewhere, and isolated state
+  dirs (staging profiles) previously shared the production cache. Existing caches are not
+  migrated automatically; copy them over to keep quote resolution history.
+
 ## [1.7.17] - 2026-10-13
 
 ### Fixed

@@ -1100,19 +1100,21 @@ init_api();
 
 // src/quoted-msg-cache.ts
 import * as fs2 from "fs";
-import * as path2 from "path";
+import * as path3 from "path";
+
+// src/cache-dir.ts
 import * as os2 from "os";
+import * as path2 from "path";
+function resolveDingTalkCacheFile(name) {
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path2.join(os2.homedir(), ".openclaw");
+  return path2.join(stateDir, "dingtalk-cache", name);
+}
+
+// src/quoted-msg-cache.ts
 var DEFAULT_TTL_MS = 24 * 60 * 60 * 1e3;
 var MAX_ENTRIES_PER_BUCKET = 100;
 var MAX_BUCKETS = 1e3;
-var CACHE_FILE = path2.join(
-  os2.homedir(),
-  ".openclaw",
-  "extensions",
-  "dingtalk",
-  ".cache",
-  "quoted-msg-cache.json"
-);
+var CACHE_FILE = resolveDingTalkCacheFile("quoted-msg-cache.json");
 var store = /* @__PURE__ */ new Map();
 var bucketOrder = [];
 function loadFromDisk() {
@@ -1142,7 +1144,7 @@ function scheduleSave() {
   _saveTimer = setTimeout(() => {
     _saveTimer = null;
     try {
-      const dir = path2.dirname(CACHE_FILE);
+      const dir = path3.dirname(CACHE_FILE);
       if (!fs2.existsSync(dir)) fs2.mkdirSync(dir, { recursive: true });
       const obj = {};
       for (const [bk, bucket] of store) {
@@ -1230,14 +1232,14 @@ init_api();
 import https2 from "node:https";
 import http2 from "node:http";
 import fs3 from "node:fs";
-import path3 from "node:path";
+import path4 from "node:path";
 import os3 from "node:os";
 var DINGTALK_API = "https://api.dingtalk.com/v1.0";
 var DINGTALK_OAPI = "https://oapi.dingtalk.com";
 var PAGE_SIZE = 50;
 var MAX_PAGES = 3;
 var TIME_TOLERANCE_MS = 1e4;
-var TEMP_DIR2 = path3.join(os3.tmpdir(), "dingtalk-media");
+var TEMP_DIR2 = path4.join(os3.tmpdir(), "dingtalk-media");
 var unionIdCache = /* @__PURE__ */ new Map();
 var UNION_CACHE_MAX = 5e3;
 var spaceIdCache = /* @__PURE__ */ new Map();
@@ -1484,16 +1486,16 @@ async function downloadToTemp(resourceUrl, signedHeaders, name, log) {
       log?.info?.("[dingtalk][quoted-file] CDN download failed, retrying IPv4-only");
       result = await downloadBuffer(resourceUrl, signedHeaders, true);
     }
-    const ext = name ? path3.extname(name).toLowerCase() : "";
+    const ext = name ? path4.extname(name).toLowerCase() : "";
     const mimeType = result.contentType?.split(";")[0]?.trim() || MIME_BY_EXT[ext] || "application/octet-stream";
     let filename;
-    if (name && path3.extname(name)) {
-      const base = path3.basename(name, path3.extname(name)).replace(/[^\w\u4e00-\u9fa5.-]/g, "_").slice(0, 60);
-      filename = `${base}_${Date.now()}${path3.extname(name)}`;
+    if (name && path4.extname(name)) {
+      const base = path4.basename(name, path4.extname(name)).replace(/[^\w\u4e00-\u9fa5.-]/g, "_").slice(0, 60);
+      filename = `${base}_${Date.now()}${path4.extname(name)}`;
     } else {
       filename = `quoted_file_${Date.now()}${ext || ".bin"}`;
     }
-    const filePath = path3.join(TEMP_DIR2, filename);
+    const filePath = path4.join(TEMP_DIR2, filename);
     fs3.writeFileSync(filePath, result.buffer);
     log?.info?.(`[dingtalk][quoted-file] Downloaded ${filePath} (${result.buffer.length} bytes, ${mimeType})`);
     return { path: filePath, mimeType };
@@ -1530,8 +1532,7 @@ async function resolveQuotedFile(config, params, log) {
 
 // src/monitor.ts
 import * as fs4 from "fs";
-import * as path4 from "path";
-import * as os4 from "os";
+import * as path5 from "path";
 var RUNTIME_CONFIG_SUBPATHS = [
   "openclaw/plugin-sdk/runtime-config-snapshot",
   "openclaw/plugin-sdk/config-runtime"
@@ -1629,7 +1630,7 @@ async function throttleSend() {
 }
 var MSG_CACHE_MAX = 500;
 var MSG_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1e3;
-var MSG_CACHE_FILE = path4.join(os4.homedir(), ".openclaw", "extensions", "dingtalk", ".cache", "msg-cache.json");
+var MSG_CACHE_FILE = resolveDingTalkCacheFile("msg-cache.json");
 var msgCache = /* @__PURE__ */ new Map();
 var outboundByTime = [];
 var OUTBOUND_TIME_CACHE_MAX = 100;
@@ -1659,7 +1660,7 @@ function scheduleSaveCache() {
   _saveCacheTimer = setTimeout(() => {
     _saveCacheTimer = null;
     try {
-      const dir = path4.dirname(MSG_CACHE_FILE);
+      const dir = path5.dirname(MSG_CACHE_FILE);
       if (!fs4.existsSync(dir)) fs4.mkdirSync(dir, { recursive: true });
       const entries = [...msgCache.entries()];
       fs4.writeFileSync(MSG_CACHE_FILE, JSON.stringify(entries), "utf-8");

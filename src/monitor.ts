@@ -5,7 +5,7 @@ import { cacheInboundDownloadCode, getCachedDownloadCode } from "./quoted-msg-ca
 import { resolveQuotedFile } from "./quoted-file-service.js";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
+import { resolveDingTalkCacheFile } from "./cache-dir.js";
 
 // ============================================================================
 // Live runtime config resolution.
@@ -163,7 +163,7 @@ interface CachedMessage {
 const MSG_CACHE_MAX = 500;           // max entries to keep
 const MSG_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-const MSG_CACHE_FILE = path.join(os.homedir(), ".openclaw", "extensions", "dingtalk", ".cache", "msg-cache.json");
+const MSG_CACHE_FILE = resolveDingTalkCacheFile("msg-cache.json");
 
 const msgCache = new Map<string, CachedMessage>();
 
