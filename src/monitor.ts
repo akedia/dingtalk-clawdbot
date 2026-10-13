@@ -14,17 +14,31 @@ import * as os from "os";
 // dispatch carrying the boot-time cfg snapshot then fails permanently with
 // PreparedModelCatalogConfigReplacedError. Fetch the live config per dispatch;
 // fall back to the captured cfg on older runtimes without this SDK export.
+// `runtime-config-snapshot` is the supported subpath (8.1+); `config-runtime`
+// was removed in 2026.10.x and is only kept as a fallback for older runtimes.
 // ============================================================================
+
+const RUNTIME_CONFIG_SUBPATHS = [
+  "openclaw/plugin-sdk/runtime-config-snapshot",
+  "openclaw/plugin-sdk/config-runtime",
+];
 
 let cachedGetRuntimeConfig: (() => any) | null | undefined;
 
 async function resolveLiveDispatchConfig(fallbackCfg: any): Promise<any> {
   if (cachedGetRuntimeConfig === undefined) {
-    try {
-      const mod: any = await import("openclaw/plugin-sdk/config-runtime");
-      cachedGetRuntimeConfig = typeof mod?.getRuntimeConfig === "function" ? mod.getRuntimeConfig : null;
-    } catch {
-      cachedGetRuntimeConfig = null;
+    cachedGetRuntimeConfig = null;
+    for (const subpath of RUNTIME_CONFIG_SUBPATHS) {
+      try {
+        const mod: any = await import(subpath);
+        if (typeof mod?.getRuntimeConfig === "function") {
+          cachedGetRuntimeConfig = mod.getRuntimeConfig;
+          break;
+        }
+      } catch {}
+    }
+    if (!cachedGetRuntimeConfig) {
+      console.warn("[dingtalk] getRuntimeConfig not available from plugin SDK; dispatching with boot-time config (replies may fail after a hot config reload)");
     }
   }
   try {

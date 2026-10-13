@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.16] - 2026-10-13
+
+### Fixed
+
+- **Resolve live runtime config from `plugin-sdk/runtime-config-snapshot`** — OpenClaw
+  2026.10.x removed the deprecated `plugin-sdk/config-runtime` subpath. The import failure
+  was swallowed, silently reverting dispatch to the boot-time config snapshot and bringing
+  back `PreparedModelCatalogConfigReplacedError` after any hot config reload. The plugin now
+  prefers `runtime-config-snapshot` (available since 2026.8.1), keeps `config-runtime` as a
+  fallback for older runtimes, and logs a warning when neither export is available.
+
+## [1.7.15] - 2026-09-07
+
+### Fixed
+
+- **Honor OpenClaw `abortSignal` in `startAccount`** — the gateway context passes
+  `abortSignal`, but the plugin only read `signal`, so channel restarts never stopped the
+  previous Stream monitor and leaked one live connection per account per restart.
+
 ## [1.7.14] - 2026-09-01
 
 ### Fixed

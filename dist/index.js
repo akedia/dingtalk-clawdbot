@@ -1532,14 +1532,26 @@ async function resolveQuotedFile(config, params, log) {
 import * as fs4 from "fs";
 import * as path4 from "path";
 import * as os4 from "os";
+var RUNTIME_CONFIG_SUBPATHS = [
+  "openclaw/plugin-sdk/runtime-config-snapshot",
+  "openclaw/plugin-sdk/config-runtime"
+];
 var cachedGetRuntimeConfig;
 async function resolveLiveDispatchConfig(fallbackCfg) {
   if (cachedGetRuntimeConfig === void 0) {
-    try {
-      const mod = await import("openclaw/plugin-sdk/config-runtime");
-      cachedGetRuntimeConfig = typeof mod?.getRuntimeConfig === "function" ? mod.getRuntimeConfig : null;
-    } catch {
-      cachedGetRuntimeConfig = null;
+    cachedGetRuntimeConfig = null;
+    for (const subpath of RUNTIME_CONFIG_SUBPATHS) {
+      try {
+        const mod = await import(subpath);
+        if (typeof mod?.getRuntimeConfig === "function") {
+          cachedGetRuntimeConfig = mod.getRuntimeConfig;
+          break;
+        }
+      } catch {
+      }
+    }
+    if (!cachedGetRuntimeConfig) {
+      console.warn("[dingtalk] getRuntimeConfig not available from plugin SDK; dispatching with boot-time config (replies may fail after a hot config reload)");
     }
   }
   try {
