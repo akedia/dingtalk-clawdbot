@@ -1,9 +1,12 @@
 # DingTalk Clawdbot Plugin
 
-> DingTalk Channel Plugin for ClawdBot/OpenClaw（`@yaoyuanchao/dingtalk` v1.7.12）
+> DingTalk Channel Plugin for ClawdBot/OpenClaw（`@yaoyuanchao/dingtalk` v1.7.16）
 
 ## 状态
 
+- ✅ OpenClaw 2026.9.9 + Node 24.21.0 + 插件 1.7.16（2026-10-13）— 9.3 起弃用 Node 22；10.x 删除 `plugin-sdk/config-runtime`，插件改读 `runtime-config-snapshot`；agent 库 schema v19→v24 需停机 `doctor --fix`；同日切 Sonnet 5.5、下线 qiang agent，详见升级记录
+- ✅ OpenClaw 2026.9.2 升级 + 插件 1.7.15（2026-09-07）— 修复 `startAccount` 读 `signal` 而运行时传 `abortSignal` 导致的 Stream 实例泄漏（09-05 网关因此 heap 崩溃）；9.1/9.2 无 Breaking；顺带修 memory.search provider、删过期 my-coffee MCP、禁用冗余 GRFal 清理 cron、清理泄漏的 acpx 孤儿进程，详见升级记录
+- ✅ weixin 插件卸载 + OpenClaw 2026.8.2 评估（2026-09-02）— 8.2 无 Breaking，未升级；插件依赖的 `plugin-sdk/config-runtime` 已被标废弃需迁到 `runtime-config-snapshot`，详见升级记录
 - ✅ OpenClaw 2026.8.1 升级（2026-08-31，事故驱动）— DingTalk agent（Jax）受用户指示自行升级但迁移没跑完导致 ~2h 停机，恢复过程踩了 5 道 fail-closed 关卡，详见升级记录
 - ✅ OpenClaw 2026.7.1 升级（2026-07-15）— Node 22.23.1、插件收敛要求编译产物（dist/index.js 打包 + npm 目录 symlink 领养）、部署流程新增 build 步骤，详见升级记录
 - ✅ OpenClaw 2026.5.18 升级（2026-05-20）— Discord/acpx/weixin 外部化、Bedrock 清理、Discord READY 超时调优、bootstrap 文件大瘦身、orphan session 归档 1.25 GB，详见升级记录
@@ -14,15 +17,15 @@
 
 | 信息 | 值 |
 |------|-----|
-| NPM 包 | `@yaoyuanchao/dingtalk` v1.7.13（npm 上仍是 1.7.12 TS-only，待发布带 dist 的新版） |
+| NPM 包 | `@yaoyuanchao/dingtalk` v1.7.16（git 已部署 2026-10-13；npm 上仍是 1.7.14，待发布） |
 | GitHub | https://github.com/akedia/dingtalk-clawdbot |
 | 远端服务器 | `ssh root@172.20.90.45`，运行用户 `clawd` |
 | Gateway 管理 | `openclaw gateway restart/stop/start/status` |
 | 插件升级 | **不要用** `openclaw plugins update dingtalk`（会覆盖为 npm 版本），用 git pull；改 .ts 后**必须重新打包 dist**（见 deploy skill） |
-| 模型 | `onehub-claude/claude-sonnet-5`（main/clawd2；agents 默认 `onehub-gemini/gemini-3.5-flash`，qiang 继承默认。via onehub，不需要代理） |
-| OpenClaw 版本 | `2026.8.1`（2026-08-31 升级；Node 22.23.1） |
-| 外部插件 | `@openclaw/discord@2026.8.1` / `@openclaw/acpx@2026.8.1` / `@tencent-weixin/openclaw-weixin@2.4.6`（weixin 尚不兼容 8.1，等上游适配） |
-| Agent 列表 | `main`（Jax）、`qiang`（QiangBot）、`clawd2`（Clawd2）— 共享同一 runtime |
+| 模型 | `onehub-claude/claude-sonnet-5-5`（main/clawd2，2026-10-13 切换，手动声明 `canonicalModelId: claude-sonnet-5`；agents 默认 `onehub-gemini/gemini-3.5-flash`（onehub 实际服务 3.6-flash）（cron 等未指定模型的任务用它）。via onehub，不需要代理。onehub 无 Haiku 5.x） |
+| OpenClaw 版本 | `2026.9.9`（2026-10-13 升级；Node 24.21.0，nodesource `node_24.x`）。10.x 暂缓（见升级记录） |
+| 外部插件 | `@openclaw/discord@2026.9.9` / `@openclaw/acpx@2026.9.9`（weixin 已于 2026-09-02 卸载） |
+| Agent 列表 | `main`（Jax）、`clawd2`（Clawd2）— 共享同一 runtime（qiang/QiangBot 2026-10-13 下线，数据归档在 `~/.archive/qiang-removed-2026-10-13/`） |
 | 本地分支 | `master` |
 
 ## 详细文档
@@ -111,7 +114,15 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 - OpenClaw health-monitor 每 5 分钟检查一次，检测到 `running: false` 会触发 auto-restart 循环（最多 10 次，指数退避）
 - 日志里每 300s 左右出现一次 `Heartbeat timeout, forcing reconnect` 是正常的 — SDK 默认 idle 超时触发的保活重连，不代表异常
 
-### OpenClaw 2026.8.1（当前版本）
+### OpenClaw 2026.9.2（当前版本，2026-09-07 升级）
+
+- **9.1/9.2 无 Breaking**，Node 要求不变，`plugin-sdk/config-runtime` 子路径仍在（但仍应迁到 `runtime-config-snapshot`）。9.1 起迁移警告改为降级运行而非拒启；`cron.skipMissedJobs` 可选；`channels.<id>.enabled:false` 不再加载该插件；9.2 把长转录/磁盘读移出事件循环、ACP 子进程随父运行结束而终止
+- **CLI 冷缓存会彻底挂死**：网关停着时 `plugins install @openclaw/discord` 两次各跑 8–9 分钟无输出、`doctor --fix --non-interactive` 9 分钟无输出（只打了配置警告），全部 timeout；acpx 却 3 分钟装完。网关起来跑热缓存后同一条 discord install 100 秒完成。**升级顺序建议：先起网关再装插件，再重启一次加载**，doctor 可以不跑（9.2 网关启动自迁移，只报 weixin 残留记录警告）
+- 冷启动 4.75 分钟（08:31:00 start → 08:35:45 listening），首个 agent turn 112 秒；三个 agent `openclaw agent --agent <id> --message` 均 OK
+- 8.1 的 discord 插件在 9.2 核心下能正常加载（两账号 initialized），不是硬依赖
+- 遗留：`config_machine_state` 里的 weixin 安装记录仍让启动 Doctor 警告 "openclaw-weixin failed post-core payload smoke check"；memory.search 已改 gemini（provider/model 两键）需观察同步是否恢复
+
+### OpenClaw 2026.8.1（历史）
 
 - **5 道 fail-closed 启动关卡**（升级/迁移不完整时依次触发，全部会 crash-loop）：
   1. 配置 schema 严格校验：8 组 legacy 键直接拒启动（见升级记录的手动迁移清单）
@@ -122,8 +133,14 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
   6. legacy workspace setup state：`<workspace>/.openclaw/workspace-state.json`（70 字节 bootstrap 种子标记）存在时**消息 dispatch 直接失败**（"思考中"占位发出后立即撤回）、cron tick 每 2 秒报错——网关能起、Stream 能连，但 agent 无法回复，最隐蔽的一道。doctor 干净跑完后会迁移+删除，但已验证过 SQLite 的 workspace 可能残留源文件（又是 7.1 的残留模式），需手动归档
 - **doctor 的坑**：`--fix --non-interactive` 只跑 "safe migrations"，**不写配置迁移**（探测出 legacy 键但让你"再跑 doctor --fix"死循环）；gateway 运行时跑 doctor 会因 maintenance lease 竞争跳过 SQLite 迁移——必须先 stop 服务再跑；配置手动迁移后用 `openclaw gateway status`（只读校验器）验证
 - **restart-loop breaker**：5 分钟窗口内多次 unclean boot 会压制 channel 自动启动，即使后续启动成功；等窗口过后干净重启一次即恢复
-- weixin 2.4.6 仍 import 已移除的 `./plugin-sdk/channel-runtime` → channel 起不来（重试 10 次后停），等上游发 8.1 适配版
-- 遗留：memory-core "dreaming cron reconcile failed: Agent-less cron job" 需设 `agents.defaults.systemAgent.agentId`（每 tick 报 WARN，无功能影响）。qiang/clawd2 auth-profiles 与 `agents.list → entries` 均已在恢复过程中完成迁移
+- ~~weixin 2.4.6 仍 import 已移除的 `./plugin-sdk/channel-runtime` → channel 起不来~~ 2026-09-02 已卸载 weixin（上游 2.4.7 起改用 `channel-message`，但不再需要）。卸载踩坑：`plugins uninstall` 对安装目录已缺失的插件报 "no authoritative runtime child list" 拒绝处理；残留的 `config_machine_state.plugins.installedIndex` 安装记录会让每次启动 Doctor 警告 "install dir missing"
+- **冷启动很慢不是卡死**：main agent SQLite 2.49 GB + 慢盘，restart 后 gateway 要 ~6.5 分钟才监听 18789（journal 期间无日志、`gateway status` 报 ECONNREFUSED）。看 `/proc/<pid>/io` 的 read_bytes 在涨就等，别再 restart。`plugins uninstall` / `registry --refresh` 冷缓存下也会 >90s 无输出
+- **Discord READY 超时改为环境变量**：`channels.discord.gatewayReadyTimeoutMs` 已不在 8.1 config schema（08-31 迁移删掉是对的，加回去会被严格校验拒启动）。8.1 的 discord 插件改读 `OPENCLAW_DISCORD_READY_TIMEOUT_MS`（默认 15000）/ `OPENCLAW_DISCORD_GATEWAY_INFO_TIMEOUT_MS`（默认 30000）/ `OPENCLAW_DISCORD_RUNTIME_READY_TIMEOUT_MS`（默认 30000）。2026-09-02 已写入 `env.vars.OPENCLAW_DISCORD_READY_TIMEOUT_MS: "45000"`（必须是字符串，数字会被 env.vars 静默跳过；用 `openclaw config set ... '"45000"' --strict-json`）。**注意：写 env.vars 会让网关自动 full restart**
+- **Discord 网络背景**：服务器无任何代理配置，公司网络边缘透明代理接管境外 443（所有外网 connect 都 1–3ms），DNS 把 discord.com 解析成 31.13.x.x 段也能通；discord.com REST 偶发 10–15s 超时、`gateway.discord.gg` WS 通常秒通。冷启动期间 event loop 冻结 98s 会连累 READY 15s 超时，但 backoff 重连后能自愈——**判断 Discord 是否在线看 `openclaw channels status --json` 的 `channelAccounts.discord[].connected`，journal 里连上不打日志**
+- **Discord default 账号没有 agent 绑定**（8.1 之前也没有，当时靠隐式默认 agent；现在 `agents.ownership: explicit`，由 `systemAgent.agentId=main` 兜底）。09-02 曾把它绑给 main 又于 11:34 用 `openclaw config patch --stdin` 回滚（热加载；`agents unbind` 在这台机器上会挂满超时）。**当时归因错了**：`"Channel is required when multiple channels are configured: dingtalk, discord"` 与绑定/systemAgent 无关——message 工具的可用通道列表是全局的（`listConfiguredMessageChannelPlugins(cfg)` 不按 agent 过滤），cron 上下文没有"当前通道"可回退，所以 **cron 里的 message 调用必须带 `channel=dingtalk`**。09-02 与 09-03 两次报错都是「SLG融合初筛每日推送」任务的模型漏传 channel 参数（raw_params 里没有 channel），其它写成 `message action=send channel=dingtalk target=...` 的任务正常
+- **这台机器上会挂死的 8.1 CLI**：`plugins uninstall`、`plugins registry --refresh`、`agents unbind`（网关正常时也一样，CLI 自己在慢盘/2.49 GB main 库上卡）；可靠的是 `config set` / `config patch --stdin`（30–40s，热加载）。`agents.defaults.systemAgent.agentId=main` 09-02 曾设置又删除——删除是错的，见下一条"cron 全停关卡"；当时的 330–380s 事件循环冻结是 cron 恢复后集中补跑积压任务所致
+- **冷启动超过 ~7 分钟会撞 "startup migration lease was lost"** → 进程 exit 1，systemd 自动再拉一次（第二次 page cache 热了 ~4 分钟起来）；启动完成后 health-monitor 因 liveness 延迟还会做一轮 channel restart；**1.7.15 之前每次这种 restart 都泄漏一份钉钉 Stream 实例**（`startAccount` 读 `signal`，运行时传的是 `abortSignal`，旧实例收不到 abort，日志 "channel stop exceeded 5000ms after abort" 就是泄漏标志），累积到 09-05 网关 2.3 GB RSS SIGABRT；已修。重启后首个 agent turn prep ~3 分钟
+- **cron 全停关卡（第 7 道，2026-09-03 查明）**：`ownership: explicit` 且无 default agent 时，cron 存储里任何一个 `agent_id` 为空的任务到期，`cron: timer tick failed: Agent-less cron job has no resolvable owner` 每 2 秒整体失败，**36 个定时任务全部不跑**、`cron.list` RPC 报 UNAVAILABLE（Jax 的 automations 工具也挂）。线上有 7 个这类用户任务 + memory-core 的 "Memory Dreaming Promotion"。**必须保留 `agents.defaults.systemAgent.agentId: "main"`**（09-02 10:52 设上后 cron 立即恢复并补跑积压 51 次，11:20 误删后再次全停）。之前记的"每 tick 报 WARN，无功能影响"是错的。09-03 已把 7 个用户任务 `cron edit <id> --agent main` 显式绑定。**cron CLI 注意**：只要存储里还有无 agent 的用户任务，`cron list` 与 Jax 的 automations 工具就报 `AgentSelectionRequiredError`（全部 `cron edit <id> --agent main` 后即恢复）；`cron run <id>` 不接受 `--agent`；**新建任务必须带 `--agent main`**。查任务 id 也可只读 `state/openclaw.sqlite` 的 `cron_jobs`。qiang/clawd2 auth-profiles 与 `agents.list → entries` 均已在恢复过程中完成迁移
 
 ### OpenClaw 2026.7.1（历史）
 
@@ -140,6 +157,47 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 - LAN 绑定的 gateway 需要 `gateway.controlUi.allowedOrigins` 或 `dangerouslyAllowHostHeaderOriginFallback: true`（2026.2.23 起要求）
 
 ## 升级记录
+
+### 2026-10-13: OpenClaw 2026.9.2 → 2026.9.9 + Node 22 → 24 + 插件 1.7.16（计划内，服务中断 ~36 分钟）
+
+**评估**：9.3–10.2 changelog 全量审阅（9.3 起 Node ≥24.16.0 <25 或 ≥26.1.0，且要求**先升 Node 再升 OpenClaw**，否则 SQLite 文本截断）。10.2 的 package exports 已无 `plugin-sdk/config-runtime`（9.9 仍有）——插件原来 try/catch 动态 import 会静默回退到启动快照，热加载后 dispatch 报 `PreparedModelCatalogConfigReplacedError`。选 9.9（9.x 维护线，含 9.3–9.7 全部修复与 Node 24 CLI 挂住修复 #163788），10.x 暂缓：10.1 引入 sealed installation generations（与 git+symlink 领养部署兼容性未知）、10.2 默认 provider-native compaction（经 onehub 是否可用未知）、旧媒体字段 `MediaPath/MediaType/MediaUrl` 待迁移。
+
+**步骤与时间线**：
+1. 08:17 插件 1.7.16（46ac641）：优先 `runtime-config-snapshot`、`config-runtime` 兜底、都没有时 warn；部署前在服务器插件目录实测两个子路径都能解析出 `getRuntimeConfig`
+2. 网关运行中预下载：nodesource 源改 `node_24.x`（原文件备份 `/root/nodesource.list.node22.bak`）+ `apt-get install --download-only`；`npm cache add openclaw@2026.9.9`
+3. 08:20 stop → 备份 `~/.archive/pre-2026.9.9-2026-10-13/`（openclaw.json + state + 三个 agent 目录 + cron，1.4 GB，20 秒）→ `apt-get install nodejs`（24.21.0）
+4. **npm 11 默认不跑 install scripts**：首次 `npm install -g openclaw@2026.9.9` 跳过了 openclaw postinstall（bundled plugins）与 koffi/esbuild/protobufjs，需带 `--allow-scripts=@google/genai,esbuild,koffi,protobufjs,openclaw` 重装
+5. 08:24 start → **exit 78 crash-loop**：agent 库 schema v19 需 "stop active agents and run openclaw doctor --fix to migrate session identities"（含非 roster 的 claude/codex/openclaw 旧目录）
+6. 08:34 停服跑 `nohup setsid timeout 1200 openclaw doctor --fix --non-interactive`：自动做迁移前 SQLite 备份（`*.pre-startup-migration-*.bak`），6 个库 v19→v24、workspace state 入库、Skill Workshop v16/v17，约 5 分钟完成迁移；之后 doctor 自己 restart 了网关服务，再被 20 分钟 timeout SIGTERM（不影响）
+7. 08:56 监听（冷启动 126 秒），cron 33 个任务启用、零 tick 失败；main/clawd2（sonnet-5-5）与 qiang（gemini）真实 agent turn 全部 OK
+8. 网关热着时 `plugins install @openclaw/acpx@2026.9.9`（8 分钟）、discord（5 分钟），**9.x 热安装不需要重启**（"Applied in Gateway generation N"）；`plugins install` 一次只接受一个包
+
+**下线 qiang**：`config patch` 删 roster 条目被拒（"Config write would drop agent roster entries without an explicit deletion"），必须 `openclaw agents delete qiang --force`——它会**删除 workspace**（先归档到 `~/.archive/qiang-removed-2026-10-13/`），CLI 10 秒超时但网关内 108 秒后成功（删了 entry、binding、系统 cron `heartbeat-qiang`/`skill-collection-review-qiang`、`~/qiang-workspace`）；**钉钉账号不会被删**，需再 `config patch` 置 `channels.dingtalk.accounts.qiang: null`，否则 QiangBot 继续在线且无绑定。系统生成的 per-agent cron 不能用 `cron rm` 删（"system-owned monitor jobs"）。
+
+**遗留**：9.9 重启后 RSS 稳定在 ~1.9–2.1 GB（9.2 是 0.6–0.9 GB，含 worker 线程堆），需观察是否再 OOM；doctor 提示 service 文件 `TimeoutStopSec` 应 ≥330s、`KillMode=mixed`、`~/.config/systemd/user` 目录权限 group/world-writable（跳过了 service 策略刷新）；weixin 残留安装记录警告仍在；Discord `allowBots` 9.7 起默认 true（我们已显式 true）。
+
+### 2026-09-07: OpenClaw 2026.8.1 → 2026.9.2 + 插件 1.7.15（计划内，服务中断 ~40 分钟）
+
+**触发原因**：复盘 09-05 19:06 网关 SIGABRT（apport `/var/crash/_usr_bin_node.1001.crash`，RSS 2.3 GB）发现插件 `startAccount({ account, signal, setStatus })` 解构的是 `signal`，而 SDK `ChannelGatewayContext` 传的是 `abortSignal`，监控循环永远收不到停止信号；每次 health-monitor 因冻结做 channel restart 都遗弃一份活的 Stream 实例（09-07 每账号 4 份、09-05 崩溃前约 8 份，重连频率是正常的 4–8 倍）。同时评估 9.1/9.2 changelog 无 Breaking，且修了长转录冻结、ACP 子进程泄漏等我们正踩的问题。
+
+**步骤与时间线**：
+1. 07:47 本地改 `abortSignal ?? signal`、重打 dist、bump 1.7.15，commit 3ff9631 推送
+2. 07:49 服务器不停机做配置/cron 修复：杀 7 个泄漏的 acpx 孤儿进程（4 个昨天的 claude-agent-acp + 今天 2 个 codex-acp + 09-04 一个 root 身份的）；`memory.search.provider=gemini` + `model=gemini-embedding-001`（索引本来就是 gemini 建的，默认 openai 无 key 导致每天 100+ 次同步拒绝）；删 `mcp.servers.my-coffee`（端点 401 "oauth token is invalid"）；SLG 融合初筛 cron prompt 改成显式 `message action=send channel=dingtalk`；`cron disable` GRFal 目录清理任务（cron 会话不在 elevated 白名单，系统 `grfal-cleanup.timer` 每 4h 已覆盖）
+3. 07:50 git pull + restart 上线 1.7.15，2.5 分钟起来，三账号各 1 条 Stream
+4. 07:56 stop → 备份 `openclaw.json.pre-2026.9.2.bak` + `~/.archive/pre-2026.9.2-2026-09-07/`（state + main/clawd2/qiang 三个 agent 库 + cron，2.7 GB，顺序读 116 MB/s 约 30 秒）→ `npm install -g openclaw@2026.9.2`（1 分钟）
+5. 07:58–08:30 踩坑：`plugins install @openclaw/discord@2026.9.2` 两次 8–9 分钟无输出超时，`doctor --fix --non-interactive` 9 分钟无输出超时，只有 acpx 3 分钟装成。判断是冷缓存 CLI 挂死，放弃 doctor 直接 start
+6. 08:31 start 9.2，08:35:45 监听（4.75 分钟），启动 Doctor 只警告 weixin 残留；cron started 36 jobs、tick 零失败；main/qiang/clawd2 三个 agent turn 全部 OK
+7. 08:45 网关热着再装 discord 9.2：100 秒完成；08:47 再 restart 一次加载
+
+**教训**：这台机器上凡是要读 main 2.4 GB 库的 CLI，在网关停着、页缓存冷时会无限挂死，`timeout` 是唯一保险；升级窗口应压缩为 stop → npm install → start，插件更新和 doctor 放到网关起来之后做。auto-mode 会拦截 `systemctl stop`+备份+安装的长复合命令，拆成单步就能过。
+
+### 2026-09-02: weixin 卸载 + 2026.8.2 评估（未升级）
+
+**8.2 评估**（`npm pack openclaw@2026.8.2` 提 CHANGELOG）：无 Breaking、Node 要求不变。修了我们 8.1 踩过的几道关卡的健壮性（不完整 session 迁移不再宣称成功、doctor 重启前释放 DB 句柄、crash-loop 压制后恢复 channel、插件更新需授权时阻止重启），**没修** dispatch 的 `PreparedModelCatalogConfigReplacedError`（1.7.14 的 live-config 修复仍需保留）。"Upcoming deprecations" 列了 5 个 plugin-sdk 子路径（`config-runtime`、`channel-reply-pipeline`、`infra-runtime`、`channel-lifecycle`、`channel-message`），移除目标日 2026-09-01 已过，8.2 和 9.1-beta.1 暂时仍保留。**本插件只用了 `config-runtime`**（`src/monitor.ts` 的 `resolveLiveDispatchConfig`），替代 `openclaw/plugin-sdk/runtime-config-snapshot` 同样导出 `getRuntimeConfig`，8.1 已有，待迁移。
+
+**weixin 卸载**（用户决定不再用）：备份 `openclaw.json.pre-weixin-uninstall-2026-09-02.bak`；删 `plugins.entries.openclaw-weixin` + `plugins.allow` 项；`npm/projects/tencent-weixin-*` 与 `~/.openclaw/openclaw-weixin` 状态目录移到 `.archive/`；`npm/package.json`+lock 删依赖（有 .bak）；`plugins registry --refresh` 后 `plugins list`/`inspect` 均不再认识它。残留：`config_machine_state` 表 `plugins.installedIndex` 行的 `index.installRecords.openclaw-weixin`（CLI uninstall 拒绝处理），启动时 Doctor 警告 "install dir missing"，需停机改 SQLite 清除。验证：三个钉钉 Stream 重连、`openclaw agent --agent main/qiang --message` 均返回 OK。
+
+**顺带发现**：冷启动 ~6.5 分钟才监听端口（main agent SQLite 2.49 GB）；Discord 两账号 READY 超时未连上，且重启前当天也无 ready 记录，属既有问题；`gatewayReadyTimeoutMs` 已不在 8.1 schema。详见"已知问题 2026.8.1"。
 
 ### 2026-08-31: OpenClaw 2026.7.1 → 2026.8.1（计划外，服务中断 ~2h，agent 自主升级事故）
 
@@ -163,7 +221,7 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 - 大版本（"2.0"重构版）升级前依然要走 breaking-changes 审查流程，这次完全没做
 
 **升级收益**：Discord/acpx 插件同步到 8.1；session store 全量入 SQLite（main 归档了 15378 个无引用 jsonl，clawd2 压缩回收 81MB）；配置清理干净了多年积累的 legacy 键
-**遗留事项**：weixin channel 等上游适配 8.1（2.4.6 仍 import 已移除的 SDK 导出）；memory-core dreaming cron 的 agent-less job 警告（需设 `agents.defaults.systemAgent.agentId`）；npm 发布 1.7.13 仍未做。qiang/clawd2 凭证迁移和 agents.entries 迁移已在恢复中完成
+**遗留事项**：~~weixin channel 等上游适配 8.1~~（2026-09-02 已卸载）；memory-core dreaming cron 的 agent-less job 警告（需设 `agents.defaults.systemAgent.agentId`）。已完成：qiang/clawd2 凭证迁移、agents.entries 迁移、npm 发布 1.7.14（2026-09-01，带 dist + 8.1 dispatch 修复）
 
 ### 2026-07-15: OpenClaw 2026.6.11 → 2026.7.1（含服务中断 ~1.5h，教训多）
 
@@ -247,4 +305,4 @@ ssh root@172.20.90.45 "sudo -u clawd bash -c '
 4. **回滚方案**：升级前手动备份 `openclaw.json.pre-<version>.bak`；`openclaw.json.bak` 是 doctor 自动创建的，可用于回滚配置
 
 ---
-**最后更新**: 2026-08-31
+**最后更新**: 2026-10-13
