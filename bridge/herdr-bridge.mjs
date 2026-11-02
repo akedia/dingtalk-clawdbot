@@ -235,6 +235,7 @@ const server = http.createServer(async (req, res) => {
       const body = raw ? JSON.parse(raw) : {};
       const out = await route(req, url, body);
       if (req.method !== 'GET') log(req.method, url.pathname, JSON.stringify(body).slice(0, 200), '->', out.ok);
+      else if (process.env.HERDR_BRIDGE_DEBUG) log('GET', url.pathname + url.search);
       send(200, out);
     } catch (e) { send(e.status || 500, { ok: false, error: String(e.message || e) }); }
   });
