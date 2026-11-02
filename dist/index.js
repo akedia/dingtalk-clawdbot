@@ -1608,7 +1608,7 @@ var KIND_TEXT = {
   exited: "\u23F9 \u5DF2\u9000\u51FA"
 };
 function cmdLink(label, cmd) {
-  return `[${label}](dtmd://dingtalkclient/sendMessage?content=${encodeURIComponent(cmd)})`;
+  return `**${label}** \`${cmd}\``;
 }
 function cleanScreen(text, maxLines) {
   const lines = String(text || "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").split("\n").map((l) => l.replace(/\s+$/, "").replace(/^\s{8,}/, "  ").replace(/\s{8,}/g, "  ")).filter((l, i, a) => l || (a[i - 1] ?? "") !== "");
@@ -1655,7 +1655,7 @@ ${actionsFor(t.t, t.status)}`);
 }
 var HELP_MD = [
   "#### herdr \u9065\u63A7\uFF08\u53EA\u8BA4\u79C1\u804A\uFF09",
-  "- `/hd ls` \u5217\u51FA\u6240\u6709\u7EC8\u7AEF\u548C agent\uFF0C\u5E26\u6309\u94AE",
+  "- `/hd ls` \u5217\u51FA\u6240\u6709\u7EC8\u7AEF\u548C agent\uFF0C\u9644\u53EF\u590D\u5236\u53D1\u9001\u7684\u64CD\u4F5C\u6307\u4EE4",
   "- `/hd read <t> [\u884C\u6570]` \u8BFB\u5C4F",
   "- `/hd reply <t>` \u5148\u770B\u5C4F\uFF0C\u4F60\u7684\u4E0B\u4E00\u6761\u6D88\u606F\u8F6C\u7ED9\u5B83\uFF085 \u5206\u949F\u5185\uFF09",
   "- `/hd send <t> <\u5185\u5BB9>` \u76F4\u63A5\u53D1\u7ED9 agent",
@@ -1663,6 +1663,8 @@ var HELP_MD = [
   "- `/hd int <t>` \u4E2D\u65AD\uFF1B`/hd kill <t>` \u7ED3\u675F",
   "- `/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>` \u8D77\u65B0 agent",
   "- `/hd digest` \u4ECA\u65E5\u6D3B\u52A8\uFF1B`/hd cancel` \u53D6\u6D88\u5F85\u56DE\u590D",
+  "",
+  "\u64CD\u4F5C\u65B9\u5F0F\uFF1A\u590D\u5236\u76F8\u5E94\u7684 `/hd ...` \u6307\u4EE4\uFF0C\u53D1\u9001\u7ED9\u672C\u673A\u5668\u4EBA\u3002\u5F53\u524D\u7248\u672C\u4E0D\u63D0\u4F9B\u53EF\u70B9\u51FB\u64CD\u4F5C\u6309\u94AE\u3002",
   "",
   "\u673A\u5668 dev\uFF08\u9ED8\u8BA4 Codex\uFF09\xB7 v172\uFF08\u9ED8\u8BA4 Claude\uFF09\uFF1B\u9879\u76EE x3analyze / grfal / skills\uFF1B\u6A21\u677F worker / advisor / verifier\uFF0C\u52A0 -codex \u7528 Codex",
   "",

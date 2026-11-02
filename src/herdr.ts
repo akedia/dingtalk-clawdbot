@@ -5,9 +5,9 @@
  * are answered directly — they never reach the AI agent. Agent status changes
  * (blocked / error / turn finished / exited) are pushed to the same people.
  *
- * Replies are markdown with `dtmd://dingtalkclient/sendMessage` links: tapping one makes
- * the client send that `/hd` command as the user, so buttons need no card template or
- * callback and go through the same allow-list as typed commands.
+ * Replies show copyable `/hd` commands. The desktop DingTalk client rejects the
+ * dtmd sendMessage links used by 1.9.0, so those are not advertised as buttons.
+ * Native interactive-card actions require a separate card callback integration.
  *
  * Talks to herdr-bridge (bridge/herdr-bridge.mjs) on the gateway host, which
  * owns the `hc` client and the SSH keys; this process only holds its token.
@@ -86,9 +86,9 @@ const KIND_TEXT: Record<string, string> = {
   blocked: "🔴 需要你处理", error: "❌ 出错", done: "✅ 完成", turn_end: "✅ 本轮完成", exited: "⏹ 已退出",
 };
 
-/** A markdown link that, when tapped, sends `cmd` as the user. */
+/** A copyable command; kept under its existing export name for compatibility. */
 export function cmdLink(label: string, cmd: string): string {
-  return `[${label}](dtmd://dingtalkclient/sendMessage?content=${encodeURIComponent(cmd)})`;
+  return `**${label}** \`${cmd}\``;
 }
 
 function cleanScreen(text: string, maxLines: number): string {
@@ -145,7 +145,7 @@ function mdLs(d: any): string {
 
 const HELP_MD = [
   "#### herdr 遥控（只认私聊）",
-  "- `/hd ls` 列出所有终端和 agent，带按钮",
+  "- `/hd ls` 列出所有终端和 agent，附可复制发送的操作指令",
   "- `/hd read <t> [行数]` 读屏",
   "- `/hd reply <t>` 先看屏，你的下一条消息转给它（5 分钟内）",
   "- `/hd send <t> <内容>` 直接发给 agent",
@@ -153,6 +153,8 @@ const HELP_MD = [
   "- `/hd int <t>` 中断；`/hd kill <t>` 结束",
   "- `/hd new <机器> <项目> [模板] <任务>` 起新 agent",
   "- `/hd digest` 今日活动；`/hd cancel` 取消待回复",
+  "",
+  "操作方式：复制相应的 `/hd ...` 指令，发送给本机器人。当前版本不提供可点击操作按钮。",
   "",
   "机器 dev（默认 Codex）· v172（默认 Claude）；项目 x3analyze / grfal / skills；模板 worker / advisor / verifier，加 -codex 用 Codex",
   "",

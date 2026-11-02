@@ -140,11 +140,11 @@ Access denied. Your staffId: 050914XXXXXXXXX
 | `/hd new <机器> <项目> [模板] <任务>` | 用模板在已登记项目里起新 agent |
 | `/hd digest` | 今日工作时长、卡住次数、完成轮数 |
 
-回复和推送里都带可点按钮（钉钉 `dtmd://` 链接，点一下等于替你发那条 `/hd` 命令）。只在私聊、只对 `allowFrom`（默认 `dm.allowFrom`）、只在 `herdr.account` 指定的账号生效。需要在 gateway 主机上部署 `bridge/herdr-bridge.mjs`，见 [bridge/README.md](./bridge/README.md)。
+回复和推送附带可复制发送的 `/hd` 操作指令。1.9.0 使用的 `dtmd://` 链接已在钉钉 Windows 客户端出现“此链接无法识别”，1.9.1 停止输出这些链接。**当前没有原生可点击操作按钮**；它需要单独接入互动卡片模板和 Stream 卡片回调，并完成客户端实测。只在私聊、只对 `allowFrom`（默认 `dm.allowFrom`）、只在 `herdr.account` 指定的账号生效。需要在 gateway 主机上部署 `bridge/herdr-bridge.mjs`，见 [bridge/README.md](./bridge/README.md)。
 
 ## 📝 更新日志
 
-**v1.9.x** — `/hd` 可点按钮、`/hd reply` / `/hd trust`
+**v1.9.x** — `/hd reply` / `/hd trust`；1.9.1 用可复制操作指令替代不兼容的链接
 
 **v1.8.x** — herdr 远程控制：`/hd` 命令与 agent 状态推送
 

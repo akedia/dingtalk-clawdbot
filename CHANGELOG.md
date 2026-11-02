@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-11-02
+
+### Fixed
+
+- Replace `dtmd://` action links with copyable `/hd` commands. The Windows
+  DingTalk client rejects those links with “此链接无法识别”; generating a link
+  was not verification of a working button. Native interactive-card callbacks
+  remain unimplemented and are no longer claimed by the current README.
+- Command-routing checks cover list/read, allow-list enforcement, approval
+  dispatch, and one-shot replies without sending real DingTalk messages.
+
 ## [1.9.0] - 2026-11-02
 
 ### Added
