@@ -4,11 +4,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
 
 const scratch = await mkdtemp(path.join(os.tmpdir(), 'herdr-routing-'));
-const bundle = path.join(scratch, 'herdr.mjs');
-await build({ entryPoints: [new URL('../src/herdr.ts', import.meta.url).pathname.replace(/^\/([A-Z]:)/i, '$1')], bundle: true, platform: 'node', format: 'esm', outfile: bundle });
+const bundle = process.env.HERDR_TEST_BUNDLE || path.join(scratch, 'herdr.mjs');
+if (!process.env.HERDR_TEST_BUNDLE) {
+  const { build } = await import('esbuild');
+  await build({ entryPoints: [new URL('../src/herdr.ts', import.meta.url).pathname.replace(/^\/([A-Z]:)/i, '$1')], bundle: true, platform: 'node', format: 'esm', outfile: bundle });
+}
 const herdr = await import(pathToFileURL(bundle));
 after(() => rm(scratch, { recursive: true, force: true }));
 
