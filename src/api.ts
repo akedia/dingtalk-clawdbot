@@ -723,6 +723,7 @@ export async function sendDMMessageWithKey(params: {
   userId: string;
   text: string;
   format?: 'text' | 'markdown';
+  title?: string;  // markdown only: shown in the notification / conversation list (default "AI")
 }): Promise<{ ok: boolean; processQueryKey?: string; error?: string }> {
   try {
     const token = await getDingTalkAccessToken(params.clientId, params.clientSecret);
@@ -731,7 +732,7 @@ export async function sendDMMessageWithKey(params: {
     const useMarkdown = params.format !== 'text';
     const msgKey = useMarkdown ? 'sampleMarkdown' : 'sampleText';
     const msgParam = useMarkdown
-      ? JSON.stringify({ title: 'AI', text: params.text })
+      ? JSON.stringify({ title: params.title || 'AI', text: params.text })
       : JSON.stringify({ content: params.text });
 
     const res = await jsonPost(

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-11-02
+
+### Added
+
+- **Tap-to-run buttons** — `/hd ls`, pushes, help and every action reply are markdown with
+  `dtmd://dingtalkclient/sendMessage` links (读屏 / 回复 / 批准 / 始终允许 / 拒绝 / 中断 / 刷新 …).
+  Tapping one makes the client send that `/hd` command as the user, so there is no card template
+  or callback to register and the allow-list applies exactly as for typed commands.
+- **`/hd reply <t>`** — shows the screen, then the sender's next plain DM (within 5 minutes,
+  one message) goes to that agent instead of the AI; `/hd reply <t> <text>` sends at once,
+  `/hd cancel` drops the pending reply.
+- **`/hd trust <t>`** — presses the bottom-most "don't ask again / always allow" option of the
+  permission prompt on screen (Claude Code and Codex wording); reports the option it chose, or
+  the screen when there is none.
+- Pushes carry a title (`🔴 需要你处理 dev/t5`) for the notification list; `sendDMMessageWithKey`
+  takes an optional markdown `title`.
+
+### Fixed
+
+- **Reads no longer scroll full-screen agents** — `hc read --lines N` on a Claude/Codex TUI
+  stitches history by scrolling the app (~20 s, and it moves the agent's view). The bridge now reads
+  the visible screen unless history is asked for (`/hd read <t> 41+`); screen reads take ~40 ms.
+
 ## [1.8.2] - 2026-11-02
 
 ### Changed

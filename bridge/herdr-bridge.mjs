@@ -151,6 +151,17 @@ const CODEX_RULES = {
   'advisor-codex': 'You are an advisor giving a second opinion; read the named files first. Give a recommendation with reasoning. This is analysis only. Do NOT edit, create, or delete any files. Do NOT write code. Do NOT start other agents.',
   'verifier-codex': 'You are a verifier: check facts against the definition of done, cite commands and outputs, do not edit. The first word of your report must be DONE or NOT-DONE.',
 };
+// "2. Yes, and don't ask again for Bash(npm test:*)" (Claude Code), "2. Yes, and don't ask again
+// for this command (a)" / "Always allow" (Codex) — the last such option on screen wins.
+export function findTrustOption(screen) {
+  let hit = null;
+  for (const line of String(screen || '').split('\n')) {
+    const m = line.match(/(?:^|[\s›❯>│])(\d)[.)]\s+(.*\b(?:don'?t ask again|always|for this session|remember)\b.*|.*(?:不再询问|始终允许|总是允许).*)$/i);
+    if (m) hit = { key: m[1], text: m[2].trim().slice(0, 120) };
+  }
+  return hit;
+}
+
 const TERM_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/;
 function needT(t) { if (!t || !TERM_RE.test(String(t))) throw Object.assign(new Error('bad terminal address'), { status: 400 }); return String(t); }
 
@@ -196,7 +207,13 @@ async function route(req, url, body) {
     });
     return { ok: true, machines: d.machines || [], terminals: list };
   }
-  if (p === '/read') { const r = await hc(['read', needT(body.t), '--lines', String(Math.min(Math.max(+body.lines || 30, 1), 200))]); return { ok: !r.code, text: r.out || r.err }; }
+  if (p === '/read') {
+    // Screen only by default: with --lines, hc scrolls a full-screen app (Claude/Codex TUI) to stitch
+    // its history, which takes ~20 s and moves the agent's view. History only when asked for.
+    const hist = body.history ? Math.min(Math.max(+body.lines || 60, 1), 200) : 0;
+    const r = await hc(['read', needT(body.t), '--lines', String(hist)], { timeoutMs: hist ? 60000 : 20000 });
+    return { ok: !r.code, text: r.out || r.err };
+  }
   if (p === '/send') { const r = await hc(['send', needT(body.t), String(body.text || '')]); return { ok: !r.code, out: parse(r.out) || r.out || r.err }; }
   if (p === '/keys') {
     const keys = (Array.isArray(body.keys) ? body.keys : [body.keys]).map(String).filter((k) => /^[A-Za-z0-9+_-]{1,20}$/.test(k));
@@ -204,6 +221,16 @@ async function route(req, url, body) {
     const r = await hc(['keys', needT(body.t), ...keys]); return { ok: !r.code, out: r.out || r.err };
   }
   if (p === '/interrupt') { const r = await hc(['interrupt', needT(body.t)]); return { ok: !r.code, out: parse(r.out) || r.out || r.err }; }
+  if (p === '/trust') {
+    // Press the bottom-most "don't ask again / always" option of the permission prompt on screen.
+    const t = needT(body.t);
+    const r = await hc(['read', t, '--lines', '0'], { timeoutMs: 20000 });
+    if (r.code) return { ok: false, error: r.err || r.out };
+    const hit = findTrustOption(r.out);
+    if (!hit) return { ok: false, error: 'no "don\'t ask again / always" option on screen', screen: r.out.split('\n').slice(-12).join('\n') };
+    const k = await hc(['keys', t, hit.key]);
+    return { ok: !k.code, key: hit.key, option: hit.text, out: k.out || k.err };
+  }
   if (p === '/kill') { const r = await hc(['kill', needT(body.t)]); return { ok: !r.code, out: r.out || r.err }; }
   if (p === '/new') return opNew(body);
   if (p === '/changes') {

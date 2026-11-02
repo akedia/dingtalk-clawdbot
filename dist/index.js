@@ -502,7 +502,7 @@ async function sendDMMessageWithKey(params) {
     const headers = { "x-acs-dingtalk-access-token": token };
     const useMarkdown = params.format !== "text";
     const msgKey = useMarkdown ? "sampleMarkdown" : "sampleText";
-    const msgParam = useMarkdown ? JSON.stringify({ title: "AI", text: params.text }) : JSON.stringify({ content: params.text });
+    const msgParam = useMarkdown ? JSON.stringify({ title: params.title || "AI", text: params.text }) : JSON.stringify({ content: params.text });
     const res = await jsonPost(
       `${DINGTALK_API_BASE}/robot/oToMessages/batchSend`,
       {
@@ -1559,12 +1559,14 @@ import * as fs4 from "fs";
 import * as path5 from "path";
 var CMD_RE = /^\/hd(\s|$)/i;
 var SCREEN_MAX = 3e3;
+var REPLY_WINDOW_MS = 5 * 6e4;
 function isHerdrCommand(text) {
   return CMD_RE.test(text.trim());
 }
 function isHerdrWriteCommand(text) {
   const sub = (text.trim().split(/\s+/)[1] || "").toLowerCase();
-  return ["send", "s", "ok", "yes", "approve", "no", "esc", "int", "interrupt", "stop", "kill", "new"].includes(sub);
+  if (sub === "reply" || sub === "r") return text.trim().split(/\s+/).length > 3;
+  return ["send", "s", "ok", "yes", "approve", "trust", "always", "no", "esc", "int", "interrupt", "stop", "kill", "new"].includes(sub);
 }
 function herdrConfig(account) {
   const h = account.config?.herdr;
@@ -1597,6 +1599,7 @@ async function bridge(h, p, body, timeoutMs = 15e4) {
   }
 }
 var STATE_ICON = { working: "\u{1F7E2}", blocked: "\u{1F534}", error: "\u274C", done: "\u2705", idle: "\u26AA" };
+var STATE_TEXT = { working: "\u5DE5\u4F5C\u4E2D", blocked: "\u7B49\u4F60\u5904\u7406", error: "\u51FA\u9519", done: "\u5B8C\u6210", idle: "\u7A7A\u95F2" };
 var KIND_TEXT = {
   blocked: "\u{1F534} \u9700\u8981\u4F60\u5904\u7406",
   error: "\u274C \u51FA\u9519",
@@ -1604,6 +1607,9 @@ var KIND_TEXT = {
   turn_end: "\u2705 \u672C\u8F6E\u5B8C\u6210",
   exited: "\u23F9 \u5DF2\u9000\u51FA"
 };
+function cmdLink(label, cmd) {
+  return `[${label}](dtmd://dingtalkclient/sendMessage?content=${encodeURIComponent(cmd)})`;
+}
 function cleanScreen(text, maxLines) {
   const lines = String(text || "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").split("\n").map((l) => l.replace(/\s+$/, "").replace(/^\s{8,}/, "  ").replace(/\s{8,}/g, "  ")).filter((l, i, a) => l || (a[i - 1] ?? "") !== "");
   while (lines.length && !lines[lines.length - 1]) lines.pop();
@@ -1611,33 +1617,78 @@ function cleanScreen(text, maxLines) {
   if (out.length > SCREEN_MAX) out = "\u2026" + out.slice(-SCREEN_MAX);
   return out;
 }
-function fmtLs(d) {
-  if (!d.ok) return `\u274C ${d.error || d.out || "ls failed"}`;
-  const machines = (d.machines || []).map((m) => `${m.name}:${m.state === "connected" ? "\u5728\u7EBF" : m.state}`).join("  ");
-  const rows = (d.terminals || []).map((t) => {
-    const icon = t.status ? STATE_ICON[t.status] || "\u2022" : "\u25AB\uFE0F";
-    const what = t.app || t.agent || "";
-    const label = t.name ? ` (${t.name})` : "";
-    const msg = t.msg ? `  ${String(t.msg).slice(0, 60)}` : "";
-    return `${icon} ${t.t}${label}  ${what}  ${t.where || t.cwd || ""}${msg}`;
-  });
-  return [`\u673A\u5668  ${machines || "\u4EC5\u672C\u673A"}`, ...rows.length ? rows : ["\uFF08\u6CA1\u6709\u7EC8\u7AEF\uFF09"]].join("\n");
+function mdScreen(screen) {
+  const safe = (l) => l.replace(/[[\]]/g, (c) => c === "[" ? "\uFF3B" : "\uFF3D").replace(/[*_`#|~<>]/g, (c) => ({ "*": "\u2217", "_": "\uFF3F", "`": "\u02CB", "#": "\uFF03", "|": "\uFF5C", "~": "\uFF5E", "<": "\u2039", ">": "\u203A" })[c]);
+  const lines = screen.split("\n").filter((l) => l.trim());
+  return lines.length ? lines.map((l) => `> ${safe(l)}`).join("  \n") : "> \uFF08\u7A7A\u5C4F\uFF09";
 }
-var HELP = [
-  "herdr \u9065\u63A7\uFF08\u53EA\u8BA4\u79C1\u804A\uFF09",
-  "/hd ls                       \u5217\u51FA\u6240\u6709\u7EC8\u7AEF\u548C agent \u72B6\u6001",
-  "/hd read <t> [\u884C\u6570]          \u8BFB\u5C4F\uFF0C\u9ED8\u8BA4 30 \u884C",
-  "/hd send <t> <\u5185\u5BB9>          \u53D1\u7ED9 agent\uFF08\u8D34\u5165\u5E76\u56DE\u8F66\uFF09",
-  "/hd ok <t> [\u9009\u9879]            \u6279\u51C6\uFF1A\u9ED8\u8BA4\u56DE\u8F66\uFF0C\u6216\u6309 1/2/y",
-  "/hd no <t>                   \u62D2\u7EDD/\u8FD4\u56DE\uFF08Esc\uFF09",
-  "/hd int <t>                  \u4E2D\u65AD\u5F53\u524D\u56DE\u5408\uFF08Ctrl+C\uFF09",
-  "/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>   \u8D77\u65B0 agent",
-  "/hd kill <t>                 \u7ED3\u675F\u7EC8\u7AEF",
-  "/hd digest                   \u4ECA\u65E5\u5DE5\u4F5C\u65F6\u957F / \u5361\u4F4F\u6B21\u6570",
-  "<t> \u7528 /hd ls \u91CC\u7684\u5730\u5740\uFF0C\u5982 dev/t12 \u6216 v172/t5\uFF0C\u4E5F\u53EF\u7528\u540D\u5B57",
-  "\u673A\u5668: dev\uFF08\u9ED8\u8BA4 Codex\uFF09\xB7 v172\uFF08\u9ED8\u8BA4 Claude\uFF09\uFF1B\u9879\u76EE: x3analyze / grfal / skills",
-  "\u6A21\u677F: worker advisor verifier\uFF0C\u52A0 -codex \u7528 Codex"
+function actionsFor(t, state) {
+  const a = [cmdLink("\u8BFB\u5C4F", `/hd read ${t}`), cmdLink("\u56DE\u590D", `/hd reply ${t}`)];
+  if (state === "blocked") a.unshift(cmdLink("\u6279\u51C6", `/hd ok ${t}`), cmdLink("\u59CB\u7EC8\u5141\u8BB8", `/hd trust ${t}`), cmdLink("\u62D2\u7EDD", `/hd no ${t}`));
+  if (state === "working") a.push(cmdLink("\u4E2D\u65AD", `/hd int ${t}`));
+  return a.join(" \xB7 ");
+}
+function mdLs(d) {
+  if (!d.ok) return `\u274C ${d.error || d.out || "ls failed"}`;
+  const machines = (d.machines || []).map((m) => `${m.name} ${m.state === "connected" ? "\u5728\u7EBF" : m.state}`).join(" \xB7 ");
+  const terms = d.terminals || [];
+  const agents = terms.filter((t) => t.status || t.app);
+  const shells = terms.filter((t) => !t.status && !t.app);
+  const order = { blocked: 0, error: 1, working: 2, done: 3, idle: 4 };
+  agents.sort((a, b) => (order[a.status] ?? 5) - (order[b.status] ?? 5));
+  const out = [`#### herdr \xB7 ${machines || "\u4EC5\u672C\u673A"}`];
+  if (agents.length) {
+    for (const t of agents) {
+      const icon = STATE_ICON[t.status] || "\u2022";
+      const msg = t.msg ? ` \xB7 ${String(t.msg).slice(0, 60)}` : "";
+      out.push(`**${icon} ${t.t}**${t.name ? ` (${t.name})` : ""} ${t.app || t.agent || ""} \xB7 ${t.where || t.cwd || ""} \xB7 ${STATE_TEXT[t.status] || t.status || ""}${msg}  
+${actionsFor(t.t, t.status)}`);
+    }
+  } else {
+    out.push("\u6CA1\u6709\u5728\u8DD1\u7684 agent");
+  }
+  if (shells.length) {
+    out.push("\u7EC8\u7AEF\uFF1A" + shells.map((t) => cmdLink(`${t.t} ${t.where || ""}`.trim(), `/hd read ${t.t}`)).join(" \xB7 "));
+  }
+  out.push([cmdLink("\u5237\u65B0", "/hd ls"), cmdLink("\u4ECA\u65E5", "/hd digest"), cmdLink("\u5E2E\u52A9", "/hd")].join(" \xB7 "));
+  return out.join("\n\n");
+}
+var HELP_MD = [
+  "#### herdr \u9065\u63A7\uFF08\u53EA\u8BA4\u79C1\u804A\uFF09",
+  "- `/hd ls` \u5217\u51FA\u6240\u6709\u7EC8\u7AEF\u548C agent\uFF0C\u5E26\u6309\u94AE",
+  "- `/hd read <t> [\u884C\u6570]` \u8BFB\u5C4F",
+  "- `/hd reply <t>` \u5148\u770B\u5C4F\uFF0C\u4F60\u7684\u4E0B\u4E00\u6761\u6D88\u606F\u8F6C\u7ED9\u5B83\uFF085 \u5206\u949F\u5185\uFF09",
+  "- `/hd send <t> <\u5185\u5BB9>` \u76F4\u63A5\u53D1\u7ED9 agent",
+  "- `/hd ok <t> [\u9009\u9879]` \u6279\u51C6\uFF1B`/hd trust <t>` \u59CB\u7EC8\u5141\u8BB8\uFF1B`/hd no <t>` \u62D2\u7EDD",
+  "- `/hd int <t>` \u4E2D\u65AD\uFF1B`/hd kill <t>` \u7ED3\u675F",
+  "- `/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>` \u8D77\u65B0 agent",
+  "- `/hd digest` \u4ECA\u65E5\u6D3B\u52A8\uFF1B`/hd cancel` \u53D6\u6D88\u5F85\u56DE\u590D",
+  "",
+  "\u673A\u5668 dev\uFF08\u9ED8\u8BA4 Codex\uFF09\xB7 v172\uFF08\u9ED8\u8BA4 Claude\uFF09\uFF1B\u9879\u76EE x3analyze / grfal / skills\uFF1B\u6A21\u677F worker / advisor / verifier\uFF0C\u52A0 -codex \u7528 Codex",
+  "",
+  [cmdLink("\u5217\u8868", "/hd ls"), cmdLink("\u4ECA\u65E5", "/hd digest")].join(" \xB7 ")
 ].join("\n");
+var pendingReply = /* @__PURE__ */ new Map();
+var pendingKey = (accountId, senderId) => `${accountId}:${senderId}`;
+async function handleHerdrPendingReply(params) {
+  const { account, senderId, isDm, text, reply, log } = params;
+  if (!isDm || isHerdrCommand(text)) return false;
+  const key = pendingKey(account.accountId, String(senderId));
+  const p = pendingReply.get(key);
+  if (!p) return false;
+  pendingReply.delete(key);
+  if (Date.now() > p.until) return false;
+  const h = herdrConfig(account);
+  if (!h || !allowList(account, h).includes(String(senderId))) return false;
+  const body = text.trim();
+  if (!body) return false;
+  const d = await bridge(h, "/send", { t: p.t, text: body });
+  await reply(d.ok ? `\u{1F4E8} \u5DF2\u53D1\u7ED9 ${p.t}
+
+${[cmdLink("\u8BFB\u5C4F", `/hd read ${p.t}`), cmdLink("\u518D\u56DE\u590D", `/hd reply ${p.t}`), cmdLink("\u5217\u8868", "/hd ls")].join(" \xB7 ")}` : `\u274C \u53D1\u7ED9 ${p.t} \u5931\u8D25\uFF1A${JSON.stringify(d.out || d.error).slice(0, 300)}`, { markdown: true, title: `\u5DF2\u53D1\u7ED9 ${p.t}` });
+  log?.info?.(`[dingtalk][herdr] reply \u2192 ${p.t} (${body.length} chars)`);
+  return true;
+}
 async function handleHerdrCommand(params) {
   const { account, senderId, isDm, text, reply, log } = params;
   if (!isHerdrCommand(text)) return false;
@@ -1651,82 +1702,148 @@ async function handleHerdrCommand(params) {
   const parts = text.trim().split(/\s+/);
   const sub = (parts[1] || "help").toLowerCase();
   const t = parts[2];
-  const rest = (n) => text.trim().split(/\s+/).slice(n).join(" ").trim();
   const tail = (n) => {
     const m = text.trim().match(new RegExp(`^(?:\\S+\\s+){${n}}([\\s\\S]*)$`));
     return (m?.[1] ?? "").trim();
   };
-  let out;
+  const md = (s, title) => reply(s, { markdown: true, title });
+  const pk = pendingKey(account.accountId, String(senderId));
   try {
     switch (sub) {
       case "ls":
       case "list":
       case "agents":
-        out = fmtLs(await bridge(h, "/ls"));
+        await md(mdLs(await bridge(h, "/ls")), "herdr \u5217\u8868");
         break;
-      case "read":
-      case "r": {
+      case "read": {
         if (!t) {
-          out = "\u7528\u6CD5\uFF1A/hd read <t> [\u884C\u6570]";
+          await reply("\u7528\u6CD5\uFF1A/hd read <t> [\u884C\u6570]");
           break;
         }
         const n = Math.min(Math.max(parseInt(parts[3] || "30", 10) || 30, 1), 120);
-        const d = await bridge(h, "/read", { t, lines: n + 20 });
-        out = d.ok ? `\u{1F4DF} ${t}
-${cleanScreen(d.text, n) || "\uFF08\u7A7A\u5C4F\uFF09"}` : `\u274C ${d.text || d.error}`;
+        const d = await bridge(h, "/read", { t, lines: n, history: n > 40 });
+        if (!d.ok) {
+          await reply(`\u274C ${d.text || d.error}`);
+          break;
+        }
+        await reply(`\u{1F4DF} ${t}
+${cleanScreen(d.text, n) || "\uFF08\u7A7A\u5C4F\uFF09"}`);
+        const st = (await bridge(h, "/ls")).terminals?.find((x) => x.t === t)?.status ?? null;
+        await md(`${t} ${st ? STATE_TEXT[st] || st : ""}
+
+${actionsFor(t, st)} \xB7 ${cmdLink("\u66F4\u591A", `/hd read ${t} 80`)}`, `${t} \u64CD\u4F5C`);
+        break;
+      }
+      case "reply":
+      case "r": {
+        if (!t) {
+          await reply("\u7528\u6CD5\uFF1A/hd reply <t> [\u5185\u5BB9]");
+          break;
+        }
+        const body = tail(3);
+        if (body) {
+          const d2 = await bridge(h, "/send", { t, text: body });
+          await md(d2.ok ? `\u{1F4E8} \u5DF2\u53D1\u7ED9 ${t}
+
+${actionsFor(t, null)}` : `\u274C ${JSON.stringify(d2.out || d2.error).slice(0, 300)}`, `\u5DF2\u53D1\u7ED9 ${t}`);
+          break;
+        }
+        const d = await bridge(h, "/read", { t });
+        if (!d.ok) {
+          await reply(`\u274C ${d.text || d.error}`);
+          break;
+        }
+        pendingReply.set(pk, { t, until: Date.now() + REPLY_WINDOW_MS });
+        await reply(`\u{1F4DF} ${t}
+${cleanScreen(d.text, 20) || "\uFF08\u7A7A\u5C4F\uFF09"}`);
+        await md(`\u270D\uFE0F \u63A5\u4E0B\u6765\u4F60\u53D1\u7684**\u4E00\u6761**\u6D88\u606F\u4F1A\u8F6C\u7ED9 **${t}**\uFF085 \u5206\u949F\u5185\u6709\u6548\uFF09
+
+${cmdLink("\u53D6\u6D88", "/hd cancel")}`, `\u56DE\u590D ${t}`);
+        break;
+      }
+      case "cancel": {
+        const had = pendingReply.delete(pk);
+        await reply(had ? "\u5DF2\u53D6\u6D88\u5F85\u56DE\u590D" : "\u6CA1\u6709\u5F85\u56DE\u590D\u7684 agent");
         break;
       }
       case "send":
       case "s": {
         const body = tail(3);
         if (!t || !body) {
-          out = "\u7528\u6CD5\uFF1A/hd send <t> <\u5185\u5BB9>";
+          await reply("\u7528\u6CD5\uFF1A/hd send <t> <\u5185\u5BB9>");
           break;
         }
         const d = await bridge(h, "/send", { t, text: body });
-        out = d.ok ? `\u{1F4E8} \u5DF2\u53D1\u7ED9 ${t}` : `\u274C ${JSON.stringify(d.out || d.error).slice(0, 300)}`;
+        await md(d.ok ? `\u{1F4E8} \u5DF2\u53D1\u7ED9 ${t}
+
+${actionsFor(t, null)}` : `\u274C ${JSON.stringify(d.out || d.error).slice(0, 300)}`, `\u5DF2\u53D1\u7ED9 ${t}`);
         break;
       }
       case "ok":
       case "yes":
       case "approve": {
         if (!t) {
-          out = "\u7528\u6CD5\uFF1A/hd ok <t> [\u9009\u9879]";
+          await reply("\u7528\u6CD5\uFF1A/hd ok <t> [\u9009\u9879]");
           break;
         }
         const key = parts[3] || "enter";
         const d = await bridge(h, "/keys", { t, keys: [key] });
-        out = d.ok ? `\u{1F44D} ${t} \u5DF2\u6309 ${key}` : `\u274C ${d.out || d.error}`;
+        await md(d.ok ? `\u{1F44D} ${t} \u5DF2\u6309 ${key}
+
+${actionsFor(t, null)}` : `\u274C ${d.out || d.error}`, `${t} \u5DF2\u6279\u51C6`);
+        break;
+      }
+      case "trust":
+      case "always": {
+        if (!t) {
+          await reply("\u7528\u6CD5\uFF1A/hd trust <t>");
+          break;
+        }
+        const d = await bridge(h, "/trust", { t });
+        await md(
+          d.ok ? `\u{1F6E1} ${t} \u5DF2\u9009\u300C${d.option}\u300D\uFF08\u6309 ${d.key}\uFF09
+
+${actionsFor(t, null)}` : `\u274C \u5C4F\u5E55\u4E0A\u6CA1\u627E\u5230\u300C\u4E0D\u518D\u8BE2\u95EE / \u59CB\u7EC8\u5141\u8BB8\u300D\u9009\u9879${d.screen ? `
+
+${mdScreen(cleanScreen(d.screen, 8))}` : ""}
+
+${cmdLink("\u6539\u4E3A\u6279\u51C6\u4E00\u6B21", `/hd ok ${t}`)} \xB7 ${cmdLink("\u8BFB\u5C4F", `/hd read ${t}`)}`,
+          `${t} \u59CB\u7EC8\u5141\u8BB8`
+        );
         break;
       }
       case "no":
       case "esc": {
         if (!t) {
-          out = "\u7528\u6CD5\uFF1A/hd no <t>";
+          await reply("\u7528\u6CD5\uFF1A/hd no <t>");
           break;
         }
         const d = await bridge(h, "/keys", { t, keys: ["esc"] });
-        out = d.ok ? `\u21A9\uFE0F ${t} \u5DF2\u6309 Esc` : `\u274C ${d.out || d.error}`;
+        await md(d.ok ? `\u21A9\uFE0F ${t} \u5DF2\u6309 Esc
+
+${actionsFor(t, null)}` : `\u274C ${d.out || d.error}`, `${t} \u5DF2\u62D2\u7EDD`);
         break;
       }
       case "int":
       case "interrupt":
       case "stop": {
         if (!t) {
-          out = "\u7528\u6CD5\uFF1A/hd int <t>";
+          await reply("\u7528\u6CD5\uFF1A/hd int <t>");
           break;
         }
         const d = await bridge(h, "/interrupt", { t });
-        out = d.ok ? `\u23F8 \u5DF2\u4E2D\u65AD ${t}` : `\u274C ${JSON.stringify(d.out || d.error).slice(0, 300)}`;
+        await md(d.ok ? `\u23F8 \u5DF2\u4E2D\u65AD ${t}
+
+${actionsFor(t, null)}` : `\u274C ${JSON.stringify(d.out || d.error).slice(0, 300)}`, `${t} \u5DF2\u4E2D\u65AD`);
         break;
       }
       case "kill": {
         if (!t) {
-          out = "\u7528\u6CD5\uFF1A/hd kill <t>";
+          await reply("\u7528\u6CD5\uFF1A/hd kill <t>");
           break;
         }
         const d = await bridge(h, "/kill", { t });
-        out = d.ok ? `\u23F9 \u5DF2\u7ED3\u675F ${t}` : `\u274C ${d.out || d.error}`;
+        await reply(d.ok ? `\u23F9 \u5DF2\u7ED3\u675F ${t}` : `\u274C ${d.out || d.error}`);
         break;
       }
       case "new": {
@@ -1738,33 +1855,37 @@ ${cleanScreen(d.text, n) || "\uFF08\u7A7A\u5C4F\uFF09"}` : `\u274C ${d.text || d
         }
         const task = tail(tplIdx);
         if (!machine || !project || !task) {
-          out = "\u7528\u6CD5\uFF1A/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>\n\u4F8B\uFF1A/hd new dev x3analyze \u770B\u4E0B\u4ECA\u5929\u7684\u5DE5\u5355\u6709\u6CA1\u6709\u65B0\u544A\u8B66";
+          await reply("\u7528\u6CD5\uFF1A/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>\n\u4F8B\uFF1A/hd new dev x3analyze \u770B\u4E0B\u4ECA\u5929\u7684\u5DE5\u5355\u6709\u6CA1\u6709\u65B0\u544A\u8B66");
           break;
         }
         await reply(`\u23F3 \u6B63\u5728 ${machine} \u7684 ${project} \u8D77 agent\u2026`);
         const d = await bridge(h, "/new", { machine, project, template, task });
-        out = d.ok ? `\u{1F680} \u5DF2\u542F\u52A8 ${d.address}\uFF08${d.template}\uFF0C${d.cwd}\uFF09
-\u5B8C\u6210\u6216\u9700\u8981\u4F60\u65F6\u4F1A\u63A8\u9001\uFF1B\u67E5\u770B\uFF1A/hd read ${d.address}` : `\u274C \u542F\u52A8\u5931\u8D25\uFF1A${d.error || JSON.stringify(d.out || d.sent).slice(0, 400)}`;
+        await md(d.ok ? `\u{1F680} \u5DF2\u542F\u52A8 **${d.address}**\uFF08${d.template}\uFF0C${d.cwd}\uFF09
+
+\u5B8C\u6210\u6216\u9700\u8981\u4F60\u65F6\u4F1A\u63A8\u9001
+
+${actionsFor(d.address, "working")}` : `\u274C \u542F\u52A8\u5931\u8D25\uFF1A${d.error || JSON.stringify(d.out || d.sent).slice(0, 400)}`, d.ok ? `\u5DF2\u542F\u52A8 ${d.address}` : "\u542F\u52A8\u5931\u8D25");
         break;
       }
       case "digest": {
         const d = await bridge(h, "/digest");
         if (!d.ok) {
-          out = `\u274C ${d.error}`;
+          await reply(`\u274C ${d.error}`);
           break;
         }
         const rows = (d.agents || []).filter((a) => a.workingMin || a.blocks || a.turns);
-        out = rows.length ? [`\u{1F4CA} ${d.date} agent \u6D3B\u52A8`, ...rows.map((a) => `${a.t} ${a.app || ""} ${a.where || ""}  \u5DE5\u4F5C ${a.workingMin} \u5206\u949F \xB7 \u5361\u4F4F ${a.blocks} \u6B21 \xB7 \u5B8C\u6210 ${a.turns} \u8F6E`)].join("\n") : `\u{1F4CA} ${d.date} \u8FD8\u6CA1\u6709 agent \u6D3B\u52A8`;
+        await md(rows.length ? [`#### \u{1F4CA} ${d.date} agent \u6D3B\u52A8`, ...rows.map((a) => `- **${a.t}** ${a.app || ""} ${a.where || ""}\uFF1A\u5DE5\u4F5C ${a.workingMin} \u5206\u949F \xB7 \u5361\u4F4F ${a.blocks} \u6B21 \xB7 \u5B8C\u6210 ${a.turns} \u8F6E`), "", cmdLink("\u5217\u8868", "/hd ls")].join("\n") : `\u{1F4CA} ${d.date} \u8FD8\u6CA1\u6709 agent \u6D3B\u52A8
+
+${cmdLink("\u5217\u8868", "/hd ls")}`, "\u4ECA\u65E5\u6D3B\u52A8");
         break;
       }
       default:
-        out = HELP;
+        await md(HELP_MD, "herdr \u5E2E\u52A9");
     }
   } catch (err) {
-    out = `\u274C ${String(err?.message || err)}`;
+    await reply(`\u274C ${String(err?.message || err)}`);
   }
-  await reply(out);
-  log?.info?.(`[dingtalk][herdr] ${sub} ${rest(2).slice(0, 60)}`);
+  log?.info?.(`[dingtalk][herdr] ${sub} ${t || ""}`);
   return true;
 }
 function cursorFile(accountId) {
@@ -1810,32 +1931,41 @@ function startHerdrNotifier(params) {
           after = d.last ?? 0;
           writeCursor(account.accountId, after);
         } else if (d.changes?.length) {
-          const lines = [];
+          const blocks = [];
           for (const c of d.changes) {
-            let s = `${KIND_TEXT[c.kind] || c.kind}  ${c.t}${c.name ? ` (${c.name})` : ""}  ${c.app || ""}  ${c.where || ""}`;
+            const state = c.kind === "blocked" ? "blocked" : null;
+            let s = `#### ${KIND_TEXT[c.kind] || c.kind} \xB7 ${c.t}
+
+${c.app || ""} \xB7 ${c.where || ""}${c.name ? ` \xB7 ${c.name}` : ""}`;
             if (c.msg) s += `
+
 ${String(c.msg).slice(0, 200)}`;
             if (c.kind === "blocked" || c.kind === "turn_end" || c.kind === "done") {
-              const r = await bridge(h, "/read", { t: c.t, lines: 40 }, 2e4);
+              const r = await bridge(h, "/read", { t: c.t }, 25e3);
               const screen = r.ok ? cleanScreen(r.text, c.kind === "blocked" ? 14 : 8) : "";
               if (screen) s += `
-\u2504\u2504\u2504
-${screen}`;
+
+${mdScreen(screen)}`;
             }
-            if (c.kind === "blocked") s += `
-\u2192 /hd ok ${c.t} \u6279\u51C6 \xB7 /hd read ${c.t} \u770B\u5168\u5C4F`;
-            lines.push(s);
+            if (c.kind !== "exited") s += `
+
+${actionsFor(c.t, state)}`;
+            blocks.push(s);
           }
-          const text = lines.join("\n\n").slice(0, 6e3);
+          const first = d.changes[0];
+          const title = `${KIND_TEXT[first.kind] || first.kind} ${first.t}${d.changes.length > 1 ? ` \u7B49 ${d.changes.length} \u6761` : ""}`;
+          const text = blocks.join("\n\n---\n\n").slice(0, 5e3) + `
+
+${cmdLink("\u5217\u8868", "/hd ls")}`;
           let delivered = true;
           for (const userId of users) {
-            const r = await sendDMMessageWithKey({ clientId: account.clientId, clientSecret: account.clientSecret, robotCode, userId, text, format: "text" });
+            const r = await sendDMMessageWithKey({ clientId: account.clientId, clientSecret: account.clientSecret, robotCode, userId, text, format: "markdown", title });
             if (!r.ok) {
               delivered = false;
               log?.warn?.(`[dingtalk][herdr] push to ${userId} failed: ${r.error}`);
             }
           }
-          if (delivered || Date.now() - (d.changes[0].at || 0) > 10 * 6e4) {
+          if (delivered || Date.now() - (first.at || 0) > 10 * 6e4) {
             after = d.changes[d.changes.length - 1].id;
             writeCursor(account.accountId, after);
           }
@@ -2895,19 +3025,20 @@ ${rawBody}`;
       }
     }
   }
+  const herdrReply = (text, opts) => !msg.sessionWebhook ? Promise.resolve() : opts?.markdown ? sendMarkdownViaSessionWebhook(msg.sessionWebhook, opts.title || "herdr", text) : sendViaSessionWebhook(msg.sessionWebhook, text);
   if (isHerdrCommand(rawBody)) {
     const isWrite = isHerdrWriteCommand(rawBody);
     if (isWrite && isContentDuplicate(senderId, rawBody, log)) return;
     if (isWrite) markContentProcessed(senderId, rawBody);
-    const handled = await handleHerdrCommand({
-      account,
-      senderId,
-      isDm,
-      text: rawBody,
-      log,
-      reply: (text) => msg.sessionWebhook ? sendViaSessionWebhook(msg.sessionWebhook, text) : Promise.resolve()
-    });
+    const handled = await handleHerdrCommand({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
     if (handled) return;
+  } else if (isDm) {
+    if (isContentDuplicate(senderId, rawBody, log)) return;
+    const consumed = await handleHerdrPendingReply({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
+    if (consumed) {
+      markContentProcessed(senderId, rawBody);
+      return;
+    }
   }
   if (isContentDuplicate(senderId, rawBody, log)) {
     return;

@@ -133,15 +133,18 @@ Access denied. Your staffId: 050914XXXXXXXXX
 |---|---|
 | `/hd ls` | 列出所有机器的终端与 agent 状态 |
 | `/hd read <t> [行数]` | 读屏 |
-| `/hd send <t> <内容>` | 发给 agent |
-| `/hd ok <t> [选项]` / `/hd no <t>` | 批准（回车或 1/2/y）/ Esc |
+| `/hd reply <t>` | 先看屏，下一条消息转给它（5 分钟内） |
+| `/hd send <t> <内容>` | 直接发给 agent |
+| `/hd ok <t> [选项]` / `/hd trust <t>` / `/hd no <t>` | 批准一次 / 始终允许 / 拒绝 |
 | `/hd int <t>` / `/hd kill <t>` | 中断当前回合 / 结束终端 |
 | `/hd new <机器> <项目> [模板] <任务>` | 用模板在已登记项目里起新 agent |
 | `/hd digest` | 今日工作时长、卡住次数、完成轮数 |
 
-只在私聊、只对 `allowFrom`（默认 `dm.allowFrom`）、只在 `herdr.account` 指定的账号生效。需要在 gateway 主机上部署 `bridge/herdr-bridge.mjs`，见 [bridge/README.md](./bridge/README.md)。
+回复和推送里都带可点按钮（钉钉 `dtmd://` 链接，点一下等于替你发那条 `/hd` 命令）。只在私聊、只对 `allowFrom`（默认 `dm.allowFrom`）、只在 `herdr.account` 指定的账号生效。需要在 gateway 主机上部署 `bridge/herdr-bridge.mjs`，见 [bridge/README.md](./bridge/README.md)。
 
 ## 📝 更新日志
+
+**v1.9.x** — `/hd` 可点按钮、`/hd reply` / `/hd trust`
 
 **v1.8.x** — herdr 远程控制：`/hd` 命令与 agent 状态推送
 

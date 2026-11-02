@@ -6,7 +6,7 @@ import { resolveQuotedFile } from "./quoted-file-service.js";
 import * as fs from "fs";
 import * as path from "path";
 import { resolveDingTalkCacheFile } from "./cache-dir.js";
-import { isHerdrCommand, isHerdrWriteCommand, handleHerdrCommand, startHerdrNotifier } from "./herdr.js";
+import { isHerdrCommand, isHerdrWriteCommand, handleHerdrCommand, handleHerdrPendingReply, startHerdrNotifier } from "./herdr.js";
 
 // ============================================================================
 // Live runtime config resolution.
@@ -1430,15 +1430,22 @@ async function processInboundMessage(
 
   // herdr remote control: answered here, never handed to the agent.
   // Read-only commands may repeat freely; commands with effects are deduped.
+  const herdrReply = (text: string, opts?: { markdown?: boolean; title?: string }) => !msg.sessionWebhook
+    ? Promise.resolve()
+    : opts?.markdown
+      ? sendMarkdownViaSessionWebhook(msg.sessionWebhook, opts.title || "herdr", text)
+      : sendViaSessionWebhook(msg.sessionWebhook, text);
   if (isHerdrCommand(rawBody)) {
     const isWrite = isHerdrWriteCommand(rawBody);
     if (isWrite && isContentDuplicate(senderId, rawBody, log)) return;
     if (isWrite) markContentProcessed(senderId, rawBody);
-    const handled = await handleHerdrCommand({
-      account, senderId, isDm, text: rawBody, log,
-      reply: (text) => msg.sessionWebhook ? sendViaSessionWebhook(msg.sessionWebhook, text) : Promise.resolve(),
-    });
+    const handled = await handleHerdrCommand({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
     if (handled) return;
+  } else if (isDm) {
+    // after `/hd reply <t>`, the next plain DM goes to that agent instead of the AI
+    if (isContentDuplicate(senderId, rawBody, log)) return;
+    const consumed = await handleHerdrPendingReply({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
+    if (consumed) { markContentProcessed(senderId, rawBody); return; }
   }
 
   // Content-level dedup: DingTalk may re-deliver the same message with a
