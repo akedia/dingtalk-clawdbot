@@ -78,6 +78,28 @@ The old Stream instance is stopped via `abortSignal` before the new one starts. 
 `openclaw gateway restart` also works but costs a 10+ minute cold start plus up to ~15
 minutes of main-agent background DB inspection, during which the main agent cannot answer.
 
+## Step 4b: Update herdr-bridge (only if `bridge/herdr-bridge.mjs` changed)
+
+The bridge does **not** run from the plugin checkout: it is a copy in `/home/herdr/herdr-bridge/`
+run by the `herdr` user's systemd unit. `git pull` + `plugins reload` leave the old bridge
+running. Check, then install and restart:
+
+```bash
+ssh root@172.20.90.45 'cmp -s /home/clawd/plugins/dingtalk/bridge/herdr-bridge.mjs /home/herdr/herdr-bridge/herdr-bridge.mjs && echo same || {
+  B=/home/herdr/herdr-bridge; S=/home/herdr/.local/state/herdr-bridge; D=$(date +%Y%m%d-%H%M)
+  cp -p $B/herdr-bridge.mjs $B/herdr-bridge.mjs.bak-$D; cp -p $S/state.json $S/state.json.bak-$D
+  install -o herdr -g herdr -m 600 /home/clawd/plugins/dingtalk/bridge/herdr-bridge.mjs $B/herdr-bridge.mjs
+  cd /home/herdr && U=$(id -u herdr) && sudo -u herdr XDG_RUNTIME_DIR=/run/user/$U \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$U/bus systemctl --user restart herdr-bridge
+  sleep 3; sudo -u herdr XDG_RUNTIME_DIR=/run/user/$U journalctl --user -u herdr-bridge --since -20s --no-pager | tail -3
+}'
+```
+
+The log must show `herdr-bridge on 127.0.0.1:8377` and `snapshot N`. Deploy the bridge before
+reloading the plugin when the plugin starts relying on new bridge fields; the bridge's new
+fields are additive, so an old plugin keeps working against a new bridge. State (change ids,
+prompt ids) survives the restart.
+
 ## Step 5: Verify Deployment
 
 ```bash

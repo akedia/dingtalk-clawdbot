@@ -1640,7 +1640,8 @@ function staleMd(t, d) {
   const screen = d.screen ? `
 
 ${mdScreen(cleanScreen(d.screen, 10))}` : "";
-  return `\u26A0\uFE0F ${t} \u7684\u63D0\u95EE #${d.expected} \u5DF2\u8FC7\u671F\uFF0C**\u6CA1\u6709\u6309\u952E**\uFF08${now}\uFF09${screen}
+  const head = d.expected == null ? `\u26A0\uFE0F ${t} \u6B63\u5728\u5DE5\u4F5C\uFF0C**\u6CA1\u6709\u6309\u952E**\uFF08\u4E0D\u5E26\u7F16\u53F7\u7684\u6279\u51C6/\u62D2\u7EDD\u4E0D\u4F1A\u6253\u65AD\u5DE5\u4F5C\u4E2D\u7684 agent\uFF1B\u8981\u6253\u65AD\u7528 \`/hd int ${t}\`\uFF09` : `\u26A0\uFE0F ${t} \u7684\u63D0\u95EE #${d.expected} \u5DF2\u8FC7\u671F\uFF0C**\u6CA1\u6709\u6309\u952E**\uFF08${now}\uFF09`;
+  return `${head}${screen}
 
 ${actionsFor(t, d.state, d.prompt)}`;
 }
@@ -1676,7 +1677,7 @@ var HELP_MD = [
   "- `/hd reply <t>` \u5148\u770B\u5C4F\uFF0C\u4F60\u7684\u4E0B\u4E00\u6761\u6D88\u606F\u8F6C\u7ED9\u5B83\uFF085 \u5206\u949F\u5185\uFF09",
   "- `/hd send <t> <\u5185\u5BB9>` \u76F4\u63A5\u53D1\u7ED9 agent",
   "- `/hd ok <t> [\u9009\u9879]` \u6279\u51C6\uFF1B`/hd trust <t>` \u59CB\u7EC8\u5141\u8BB8\uFF1B`/hd no <t>` \u62D2\u7EDD",
-  "  \uFF08\u63A8\u9001\u91CC\u7684\u6307\u4EE4\u5E26 `#\u7F16\u53F7`\uFF1Aagent \u5DF2\u7ECF\u6362\u4E86\u95EE\u9898\u6216\u4E0D\u518D\u7B49\u5F85\u65F6\u4F1A\u62D2\u7EDD\u6267\u884C\uFF0C\u4E0D\u4F1A\u6309\u9519\uFF09",
+  "  \uFF08\u63A8\u9001\u91CC\u7684\u6307\u4EE4\u5E26 `#\u7F16\u53F7`\uFF1Aagent \u5DF2\u7ECF\u6362\u4E86\u95EE\u9898\u6216\u4E0D\u518D\u7B49\u5F85\u65F6\u4F1A\u62D2\u7EDD\u6267\u884C\uFF0C\u4E0D\u4F1A\u6309\u9519\uFF1B\u4E0D\u5E26\u7F16\u53F7\u65F6\uFF0Cagent \u6B63\u5728\u5DE5\u4F5C\u4E5F\u4F1A\u62D2\u7EDD\uFF09",
   "- `/hd int <t>` \u4E2D\u65AD\uFF1B`/hd kill <t>` \u7ED3\u675F",
   "- `/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>` \u8D77\u65B0 agent",
   "- `/hd digest` \u4ECA\u65E5\u6D3B\u52A8\uFF1B`/hd cancel` \u53D6\u6D88\u5F85\u56DE\u590D",
@@ -1895,7 +1896,10 @@ ${actionsFor(t, null)}` : `\u274C ${JSON.stringify(d.out || d.error).slice(0, 30
         }
         await reply(`\u23F3 \u6B63\u5728 ${machine} \u7684 ${project} \u8D77 agent\u2026`);
         const d = await bridge(h, "/new", { machine, project, template, task });
-        await md(d.ok ? `\u{1F680} \u5DF2\u542F\u52A8 **${d.address}**\uFF08${d.template}\uFF0C${d.cwd}\uFF09
+        const notSent = d.ok && d.sent?.sent === false;
+        await md(notSent ? `\u26A0\uFE0F \u5DF2\u542F\u52A8 **${d.address}**\uFF08${d.template}\uFF0C${d.cwd}\uFF09\uFF0C\u4F46**\u4EFB\u52A1\u6CA1\u53D1\u51FA\u53BB**\uFF1A${String(d.sent.reason || "").slice(0, 200)}
+
+\u5148\u8BFB\u5C4F\u786E\u8BA4\u5B83\u5728\u7B49\u8F93\u5165\uFF0C\u518D\u53D1\u4EFB\u52A1\uFF1A${cmdLink("\u8BFB\u5C4F", `/hd read ${d.address}`)} \xB7 ${cmdLink("\u56DE\u590D", `/hd reply ${d.address}`)}` : d.ok ? `\u{1F680} \u5DF2\u542F\u52A8 **${d.address}**\uFF08${d.template}\uFF0C${d.cwd}\uFF09
 
 \u5B8C\u6210\u6216\u9700\u8981\u4F60\u65F6\u4F1A\u63A8\u9001
 

@@ -137,7 +137,10 @@ function staleMd(t: string, d: any): string {
     ? `它现在在问另一个问题 #${d.prompt}`
     : `它现在${d.state ? `「${STATE_TEXT[d.state] || d.state}」` : "状态未知"}`;
   const screen = d.screen ? `\n\n${mdScreen(cleanScreen(d.screen, 10))}` : "";
-  return `⚠️ ${t} 的提问 #${d.expected} 已过期，**没有按键**（${now}）${screen}\n\n${actionsFor(t, d.state, d.prompt)}`;
+  const head = d.expected == null
+    ? `⚠️ ${t} 正在工作，**没有按键**（不带编号的批准/拒绝不会打断工作中的 agent；要打断用 \`/hd int ${t}\`）`
+    : `⚠️ ${t} 的提问 #${d.expected} 已过期，**没有按键**（${now}）`;
+  return `${head}${screen}\n\n${actionsFor(t, d.state, d.prompt)}`;
 }
 
 function mdLs(d: any): string {
@@ -172,7 +175,7 @@ const HELP_MD = [
   "- `/hd reply <t>` 先看屏，你的下一条消息转给它（5 分钟内）",
   "- `/hd send <t> <内容>` 直接发给 agent",
   "- `/hd ok <t> [选项]` 批准；`/hd trust <t>` 始终允许；`/hd no <t>` 拒绝",
-  "  （推送里的指令带 `#编号`：agent 已经换了问题或不再等待时会拒绝执行，不会按错）",
+  "  （推送里的指令带 `#编号`：agent 已经换了问题或不再等待时会拒绝执行，不会按错；不带编号时，agent 正在工作也会拒绝）",
   "- `/hd int <t>` 中断；`/hd kill <t>` 结束",
   "- `/hd new <机器> <项目> [模板] <任务>` 起新 agent",
   "- `/hd digest` 今日活动；`/hd cancel` 取消待回复",
@@ -336,7 +339,10 @@ export async function handleHerdrCommand(params: {
         if (!machine || !project || !task) { await reply("用法：/hd new <机器> <项目> [模板] <任务>\n例：/hd new dev x3analyze 看下今天的工单有没有新告警"); break; }
         await reply(`⏳ 正在 ${machine} 的 ${project} 起 agent…`);
         const d = await bridge(h, "/new", { machine, project, template, task });
-        await md(d.ok
+        const notSent = d.ok && d.sent?.sent === false;
+        await md(notSent
+          ? `⚠️ 已启动 **${d.address}**（${d.template}，${d.cwd}），但**任务没发出去**：${String(d.sent.reason || "").slice(0, 200)}\n\n先读屏确认它在等输入，再发任务：${cmdLink("读屏", `/hd read ${d.address}`)} · ${cmdLink("回复", `/hd reply ${d.address}`)}`
+          : d.ok
           ? `🚀 已启动 **${d.address}**（${d.template}，${d.cwd}）\n\n完成或需要你时会推送\n\n${actionsFor(d.address, "working")}`
           : `❌ 启动失败：${d.error || JSON.stringify(d.out || d.sent).slice(0, 400)}`, d.ok ? `已启动 ${d.address}` : "启动失败");
         break;

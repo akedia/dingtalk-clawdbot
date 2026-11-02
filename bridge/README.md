@@ -44,8 +44,15 @@ Config `~herdr/.config/herdr-bridge/config.json` (mode 600):
 
 `space` is optional: with it, agents started by `/hd new` appear as a new tab in that Herdr
 space (`herdr-app ls` shows the ids; strip the `machine/` prefix). Templates are resolved on
-the target machine (`%APPDATA%\herdr-core\templates`); names ending in `-codex` are started,
-waited for, and then sent the task, because Codex's first message is unreliable.
+the target machine (`%APPDATA%\herdr-core\templates`). Names ending in `-codex` get the role
+rules put in front of the task (Codex templates carry no role text). The task goes as the
+template's first message; if hc reports "still starting" (it typed nothing), the bridge waits
+for the agent and sends it once. Codex templates should pass `-c tui.animations=false`: an
+animated terminal-title spinner during Codex's startup work counts as output and keeps hc
+from ever seeing it settle. Any other unsent first message is reported back, not retried.
+
+The bridge is a copy outside the plugin checkout; after changing `herdr-bridge.mjs`, install
+it and restart the service (see the deploy skill, step 4b).
 
 Service `~herdr/.config/systemd/user/herdr-bridge.service`:
 

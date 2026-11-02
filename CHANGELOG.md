@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] - 2026-11-02
+
+### Fixed
+
+- Untagged `/hd ok|trust|no` are refused while the agent is working: Esc from `/hd no`
+  would interrupt it. They still go to idle/done/blocked agents and to terminals that never
+  reported a status (a startup dialog may be waiting). The reply names `/hd int` for a
+  deliberate interrupt.
+- `/hd new` with a `-codex` template sends the task as the first message instead of always
+  starting, waiting and sending; if hc answers "still starting" (nothing was typed) it waits
+  and sends once. Any other unsent task is now reported ("任务没发出去") instead of
+  "已启动". Codex templates need `-c tui.animations=false`; see bridge/README.md.
+- Deploy skill: step 4b installs and restarts herdr-bridge, which `git pull` + reload never
+  touched.
+
 ## [1.10.0] - 2026-11-02
 
 ### Added

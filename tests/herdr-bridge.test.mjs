@@ -17,7 +17,7 @@ const blocked = (msg, kind = 'permission') => ({ state: 'blocked', kind, msg });
 test('each blocked episode gets its own prompt id and only that id passes', () => {
   const t = 'dev/t1';
   bridge.applyStatus(t, { state: 'working' }, false);
-  assert.equal(bridge.checkPrompt(t, undefined), null, 'no tag: unchanged behaviour');
+  assert.equal(bridge.checkPrompt(t, undefined)?.stale, true, 'no tag on a working agent: refuse');
   assert.equal(bridge.checkPrompt(t, 1)?.stale, true, 'working agent: refuse');
 
   bridge.applyStatus(t, blocked('run hostname'), false);
@@ -52,4 +52,18 @@ test('a silent snapshot still numbers a prompt so a tagged reply can match it', 
   const id = bridge.checkPrompt(t, -1).prompt;
   assert.ok(Number.isInteger(id));
   assert.equal(bridge.checkPrompt(t, id), null);
+});
+
+test('untagged keys are refused only while the agent works', () => {
+  const t = 'dev/t3';
+  assert.equal(bridge.checkPrompt(t, undefined), null, 'no status yet (startup dialog): allowed');
+  bridge.applyStatus(t, { state: 'idle' }, true);
+  assert.equal(bridge.checkPrompt(t, undefined), null);
+  bridge.applyStatus(t, blocked('allow?'), true);
+  assert.equal(bridge.checkPrompt(t, ''), null);
+  bridge.applyStatus(t, { state: 'working' }, true);
+  const r = bridge.checkPrompt(t, undefined);
+  assert.deepEqual([r.stale, r.state, r.expected], [true, 'working', null]);
+  bridge.applyStatus(t, { state: 'done' }, true);
+  assert.equal(bridge.checkPrompt(t, null), null);
 });

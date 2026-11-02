@@ -106,3 +106,19 @@ test('a stale approval on an agent that moved on offers no approval at all', asy
   assert.doesNotMatch(text, /\/hd (ok|no|trust) /);
   assert.match(text, /`\/hd int dev\/t4`/);
 }, { '/keys': () => ({ ok: false, stale: true, expected: 42, state: 'working', prompt: null, screen: '' }) }));
+
+test('an untagged choice refused because the agent works says so and offers interrupt', async () => withBridge(async ({ replies, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd no dev/t4' });
+  const text = replies.map(r => r.text).join('\n');
+  assert.match(text, /正在工作，\*\*没有按键\*\*/);
+  assert.doesNotMatch(text, /#null|#undefined/);
+  assert.match(text, /`\/hd int dev\/t4`/);
+}, { '/keys': () => ({ ok: false, stale: true, expected: null, state: 'working', prompt: null, screen: '' }) }));
+
+test('new reports a task that was not sent instead of claiming it started', async () => withBridge(async ({ replies, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd new dev x3analyze worker-codex 看一下' });
+  const text = replies.map(r => r.text).join('\n');
+  assert.match(text, /任务没发出去/);
+  assert.match(text, /`\/hd read dev\/t9`/);
+  assert.doesNotMatch(text, /🚀/);
+}, { '/new': () => ({ ok: true, address: 'dev/t9', template: 'worker-codex', cwd: 'E:\x3analyze', sent: { sent: false, reason: 'it never reported its status' } }) }));

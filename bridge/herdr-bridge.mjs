@@ -177,11 +177,18 @@ export function findTrustOption(screen) {
   return hit;
 }
 
-/** null when the agent is still blocked on prompt `expect` (or no `expect` was given), else why not. */
+/**
+ * null when the keys may go: still blocked on prompt `expect`, or (untagged) not working.
+ * Untagged keys are refused only while the agent works — Esc would interrupt it — and still
+ * go to terminals with no status (a startup dialog may be waiting for them).
+ */
 export function checkPrompt(t, expect) {
-  if (expect === undefined || expect === null || expect === '') return null;
-  const want = Number(expect);
   const state = st.last[t]?.state ?? null;
+  if (expect === undefined || expect === null || expect === '') {
+    if (state !== 'working') return null;
+    return { ok: false, stale: true, expected: null, state, prompt: null, error: 'agent is working; untagged keys refused' };
+  }
+  const want = Number(expect);
   const prompt = state === 'blocked' ? st.prompts[t]?.id ?? null : null;
   if (Number.isInteger(want) && prompt === want) return null;
   return { ok: false, stale: true, expected: expect, state, prompt, error: `prompt #${expect} is no longer on screen` };
@@ -211,18 +218,22 @@ async function opNew(b) {
   const args = ['run', '--bg', '--name', name, '--cwd', cwd];
   if (machine !== cfg.self) args.push('--on', machine);
   if (proj?.space) args.push('--label', `herdr.space=${proj.space}`, '--label', `herdr.tab=tb${crypto.randomBytes(16).toString('hex')}`);
-  const isCodex = template.endsWith('-codex');
-  args.push(template);
-  if (!isCodex) args.push(task);
+  // Codex templates carry no role text, so the rules go in front of the task.
+  const text = template.endsWith('-codex') ? `${CODEX_RULES[template] || ''}\n\n${task}`.trim() : task;
+  args.push(template, text);
   const r = await hc(args, { timeoutMs: 120000 });
   const res = parse(r.out);
   if (r.code || !res?.address) return { ok: false, step: 'run', out: r.out || r.err };
-  if (isCodex) {
+  const first = res.first_message || null;
+  // "still starting" means it reported status but hc typed nothing; anything else
+  // (never reported → maybe a dialog) is left for a person to read first.
+  if (first?.sent === false && /still starting/.test(first.reason || '')) {
     await hc(['wait', res.address, '--timeout', '90'], { timeoutMs: 100000 });
-    const s = await hc(['send', res.address, `${CODEX_RULES[template] || ''}\n\n${task}`.trim()]);
-    return { ok: s.code === 0, address: res.address, name, cwd, template, sent: parse(s.out) || s.out || s.err };
+    const s = await hc(['send', res.address, text]);
+    const sent = parse(s.out);
+    return { ok: true, address: res.address, name, cwd, template, sent: s.code ? { sent: false, reason: s.err || s.out } : { sent: true, ...sent, retried: true } };
   }
-  return { ok: true, address: res.address, name, cwd, template, sent: res.first_message || null };
+  return { ok: true, address: res.address, name, cwd, template, sent: first };
 }
 
 async function route(req, url, body) {
