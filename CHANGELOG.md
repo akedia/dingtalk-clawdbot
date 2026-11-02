@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-11-02
+
+### Changed
+
+- **dingtalk-stream pinned to 2.1.6-beta.1** (was `^2.1.4`). Its `connect()` now runs `cleanup()`
+  — listeners removed and the previous socket terminated — which is the upstream fix for the leak
+  patched locally in 1.8.1; `disconnect()` cleans up the same way. Dependencies (axios, debug, ws)
+  are unchanged. 2.1.7-beta.1 was not taken: it also caps concurrent callback handlers at 100 and
+  leaves the rest unacknowledged for server retry, a behaviour change this plugin has not been
+  checked against. The 1.8.1 socket retirement stays as a second guard (a no-op after `cleanup()`).
+- Startup logs `stream SDK self-cleanup: yes|no`, to tell a freshly loaded SDK from a
+  module-cached old one after `plugins reload`.
+
 ## [1.8.1] - 2026-11-02
 
 ### Fixed

@@ -2114,6 +2114,7 @@ async function startDingTalkMonitor(ctx) {
     autoReconnect: false
     // We manage reconnection with exponential backoff
   });
+  log?.info?.("[dingtalk:" + account.accountId + "] stream SDK self-cleanup: " + (typeof client.cleanup === "function" ? "yes" : "no"));
   const HEARTBEAT_CHECK_MS = 3e4;
   const HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1e3;
   const RECONNECT_BASE_MS = 1e3;

@@ -436,6 +436,8 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
     keepAlive: false,      // Disabled: SDK's 8s ping/pong terminates on unreachable gateway endpoints
     autoReconnect: false,  // We manage reconnection with exponential backoff
   });
+  // 2.1.6+ closes the previous socket inside connect(); tells a fresh SDK from a module-cached old one after reloads.
+  log?.info?.("[dingtalk:" + account.accountId + "] stream SDK self-cleanup: " + (typeof client.cleanup === "function" ? "yes" : "no"));
 
   // Reconnection configuration
   const HEARTBEAT_CHECK_MS = 30_000;     // Check connectivity every 30s
