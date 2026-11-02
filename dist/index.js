@@ -2155,8 +2155,20 @@ async function startDingTalkMonitor(ctx) {
     touchActivity();
     return { status: "SUCCESS", message: "OK" };
   });
+  const retireSocket = (sock) => {
+    if (!sock) return;
+    try {
+      sock.removeAllListeners?.();
+      sock.on?.("error", () => {
+      });
+      if (typeof sock.terminate === "function") sock.terminate();
+      else sock.close?.();
+    } catch {
+    }
+  };
   while (!abortSignal?.aborted) {
     try {
+      retireSocket(client.socket);
       await client.connect();
       const connectTime = Date.now();
       lastActivityTime = connectTime;
@@ -2221,6 +2233,7 @@ async function startDingTalkMonitor(ctx) {
     client.disconnect?.();
   } catch {
   }
+  retireSocket(client.socket);
   setStatus?.({ running: false, lastStopAt: Date.now() });
 }
 async function extractMessageContent(msg, account, log) {

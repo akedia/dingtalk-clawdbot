@@ -494,6 +494,21 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
     return { status: "SUCCESS", message: "OK" };
   });
 
+  // dingtalk-stream 2.1.4 replaces `client.socket` on every connect() without closing the
+  // previous one, and its SYSTEM "disconnect" topic only flips `connected` (the socket stays
+  // open). Every reconnect therefore leaked a live WebSocket whose message handler kept
+  // dispatching into this instance — and, after a plugin reload, into the *old* code
+  // (2026-11-02: ~900 sockets after 19 days, /hd answered by pre-1.8 instances).
+  // Drop the listeners first so the old socket's late "close" can't mark the new one down.
+  const retireSocket = (sock: any) => {
+    if (!sock) return;
+    try {
+      sock.removeAllListeners?.();
+      sock.on?.("error", () => {});
+      if (typeof sock.terminate === "function") sock.terminate(); else sock.close?.();
+    } catch { /* already gone */ }
+  };
+
   // ============================================================================
   // Connection loop with custom heartbeat + exponential backoff reconnection.
   // Keeps this function alive until abort signal fires.
@@ -501,6 +516,7 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
   // ============================================================================
   while (!abortSignal?.aborted) {
     try {
+      retireSocket(client.socket);
       await client.connect();
       const connectTime = Date.now();
       lastActivityTime = connectTime;
@@ -570,6 +586,7 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
 
   // Final cleanup
   try { client.disconnect?.(); } catch {}
+  retireSocket(client.socket);
   setStatus?.({ running: false, lastStopAt: Date.now() });
 }
 

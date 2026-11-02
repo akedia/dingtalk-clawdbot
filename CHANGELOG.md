@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-11-02
+
+### Fixed
+
+- **Stream sockets leaked on every reconnect** — dingtalk-stream 2.1.4 replaces `client.socket`
+  on each `connect()` without closing the old one, and its SYSTEM `disconnect` topic only clears
+  `connected`. Our reconnect loop (about every 90 s per account) therefore left a live WebSocket
+  behind each time, still dispatching into the instance that opened it. After 19 days the gateway
+  held ~900 DingTalk sockets, and after a plugin reload most inbound messages were handled by
+  pre-reload code (so `/hd` reached the AI instead of the 1.8.0 handler). The previous socket is
+  now stripped of its listeners and terminated before each reconnect and on shutdown. Sockets
+  leaked by older instances only go away with a gateway restart.
+
 ## [1.8.0] - 2026-11-02
 
 ### Added
