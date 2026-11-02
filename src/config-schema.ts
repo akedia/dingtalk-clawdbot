@@ -103,6 +103,17 @@ export const dingTalkAccountConfigSchema = z.object({
     ),
   messageAggregationDelayMs: z.number().int().positive().default(2000).optional()
     .describe('Time window in milliseconds to wait for additional messages (default 2000)'),
+
+  // herdr remote control (/hd commands in DMs + agent status pushes), via bridge/herdr-bridge.mjs
+  herdr: z.object({
+    enabled: z.boolean().optional().describe('Turn the /hd commands and pushes on (default true when token is set)'),
+    account: z.string().optional().describe('Only this accountId answers /hd and pushes (default "default")'),
+    bridgeUrl: z.string().optional().describe('herdr-bridge URL (default http://127.0.0.1:8377)'),
+    token: z.string().optional().describe('herdr-bridge bearer token'),
+    allowFrom: z.array(z.string()).optional().describe('staffIds allowed to use /hd and receive pushes (default dm.allowFrom)'),
+    notify: z.boolean().optional().describe('Push blocked/error/finished agent changes (default true)'),
+    pollSeconds: z.number().int().positive().optional().describe('How often to poll the bridge for changes (default 5)'),
+  }).optional().describe('herdr remote control'),
 }).passthrough();
 
 // Top-level DingTalk config: account config + multi-account support

@@ -4,6 +4,7 @@
 
 ## 状态
 
+- ✅ 插件 1.8.0 herdr 远程控制（2026-11-02）— 私聊 `/hd` 命令（不经 AI）与 agent 状态推送；gateway 主机新增独立用户 `herdr` 跑 `bridge/herdr-bridge.mjs`（systemd user service，127.0.0.1:8377，token 见 `channels.dingtalk.herdr.token`），只对 `default` 账号和 dm.allowFrom 生效，详见 bridge/README.md
 - ✅ OpenClaw 2026.10.2 + 插件 1.7.18 + linked install（2026-10-13）— 插件改为 `plugins install -l ~/plugins/dingtalk`（10.x 下旧的 npm-symlink 领养会被 doctor 判 install incomplete 并可能被 npm 旧版覆盖）；修复非默认账号路由到 main 的缺陷（1.7.17）；缓存移出安装目录（1.7.18）；systemd 停止策略 330s/KillMode=mixed + 3GB 堆上限；隔离 staging 全量预演，详见升级记录
 - ✅ OpenClaw 2026.9.9 + Node 24.21.0 + 插件 1.7.16（2026-10-13）— 9.3 起弃用 Node 22；10.x 删除 `plugin-sdk/config-runtime`，插件改读 `runtime-config-snapshot`；agent 库 schema v19→v24 需停机 `doctor --fix`；同日切 Sonnet 5.5、下线 qiang agent，详见升级记录
 - ✅ OpenClaw 2026.9.2 升级 + 插件 1.7.15（2026-09-07）— 修复 `startAccount` 读 `signal` 而运行时传 `abortSignal` 导致的 Stream 实例泄漏（09-05 网关因此 heap 崩溃）；9.1/9.2 无 Breaking；顺带修 memory.search provider、删过期 my-coffee MCP、禁用冗余 GRFal 清理 cron、清理泄漏的 acpx 孤儿进程，详见升级记录

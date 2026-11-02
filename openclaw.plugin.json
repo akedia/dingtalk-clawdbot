@@ -102,7 +102,21 @@
               "additionalProperties": true
             }
           },
-          "defaultAccount": { "type": "string", "description": "Default account ID when accounts is defined" }
+          "defaultAccount": { "type": "string", "description": "Default account ID when accounts is defined" },
+          "herdr": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "herdr remote control: /hd commands in DMs and agent status pushes (bridge/herdr-bridge.mjs)",
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "account": { "type": "string", "description": "Only this accountId answers /hd and pushes (default \"default\")" },
+              "bridgeUrl": { "type": "string", "description": "herdr-bridge URL (default http://127.0.0.1:8377)" },
+              "token": { "type": "string", "description": "herdr-bridge bearer token" },
+              "allowFrom": { "type": "array", "items": { "type": "string" }, "description": "staffIds allowed (default dm.allowFrom)" },
+              "notify": { "type": "boolean", "description": "Push agent status changes (default true)" },
+              "pollSeconds": { "type": "integer", "minimum": 1 }
+            }
+          }
         }
       }
     }

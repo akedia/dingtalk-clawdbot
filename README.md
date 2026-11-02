@@ -111,7 +111,39 @@ Access denied. Your staffId: 050914XXXXXXXXX
 - `dm.allowFrom` — 私聊白名单（全局）
 - `groups.<id>.allowFrom` — 指定群的发言人白名单（per-group）
 
+## 🐏 herdr 远程控制（/hd）
+
+在钉钉私聊里遥控 [herdr](https://herdr.dev) 管着的多台机器上的 coding agent，并在 agent 卡住、出错、完成时收到推送。`/hd` 消息由插件直接处理，不经过 AI。
+
+```json
+{
+  "channels": {
+    "dingtalk": {
+      "herdr": {
+        "token": "<herdr-bridge 的 token>",
+        "account": "default",
+        "allowFrom": ["050914XXXXXXXXX"]
+      }
+    }
+  }
+}
+```
+
+| 命令 | 作用 |
+|---|---|
+| `/hd ls` | 列出所有机器的终端与 agent 状态 |
+| `/hd read <t> [行数]` | 读屏 |
+| `/hd send <t> <内容>` | 发给 agent |
+| `/hd ok <t> [选项]` / `/hd no <t>` | 批准（回车或 1/2/y）/ Esc |
+| `/hd int <t>` / `/hd kill <t>` | 中断当前回合 / 结束终端 |
+| `/hd new <机器> <项目> [模板] <任务>` | 用模板在已登记项目里起新 agent |
+| `/hd digest` | 今日工作时长、卡住次数、完成轮数 |
+
+只在私聊、只对 `allowFrom`（默认 `dm.allowFrom`）、只在 `herdr.account` 指定的账号生效。需要在 gateway 主机上部署 `bridge/herdr-bridge.mjs`，见 [bridge/README.md](./bridge/README.md)。
+
 ## 📝 更新日志
+
+**v1.8.x** — herdr 远程控制：`/hd` 命令与 agent 状态推送
 
 **v1.7.x** — Queue lane 路由（`/btw` 与 `/stop` 独立通道）、Cron/proactive 消息走 deliverReply 保持 persona
 

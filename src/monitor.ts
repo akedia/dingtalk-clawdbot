@@ -6,6 +6,7 @@ import { resolveQuotedFile } from "./quoted-file-service.js";
 import * as fs from "fs";
 import * as path from "path";
 import { resolveDingTalkCacheFile } from "./cache-dir.js";
+import { isHerdrCommand, isHerdrWriteCommand, handleHerdrCommand, startHerdrNotifier } from "./herdr.js";
 
 // ============================================================================
 // Live runtime config resolution.
@@ -395,6 +396,9 @@ export async function startDingTalkMonitor(ctx: DingTalkMonitorContext): Promise
 
   // Schedule session queue cleanup every 60s
   const queueCleanupInterval = setInterval(cleanupExpiredSessionQueues, 60_000);
+
+  // herdr status pushes (no-op unless channels.dingtalk.herdr is configured for this account)
+  startHerdrNotifier({ account, abortSignal, log });
 
   // Clean up on abort (only if abortSignal is provided)
   if (abortSignal) {
@@ -1403,6 +1407,19 @@ async function processInboundMessage(
         return;
       }
     }
+  }
+
+  // herdr remote control: answered here, never handed to the agent.
+  // Read-only commands may repeat freely; commands with effects are deduped.
+  if (isHerdrCommand(rawBody)) {
+    const isWrite = isHerdrWriteCommand(rawBody);
+    if (isWrite && isContentDuplicate(senderId, rawBody, log)) return;
+    if (isWrite) markContentProcessed(senderId, rawBody);
+    const handled = await handleHerdrCommand({
+      account, senderId, isDm, text: rawBody, log,
+      reply: (text) => msg.sessionWebhook ? sendViaSessionWebhook(msg.sessionWebhook, text) : Promise.resolve(),
+    });
+    if (handled) return;
   }
 
   // Content-level dedup: DingTalk may re-deliver the same message with a

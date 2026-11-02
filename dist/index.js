@@ -1000,7 +1000,17 @@ var dingTalkAccountConfigSchema = z.object({
   messageAggregation: z.boolean().default(true).describe(
     "Aggregate messages from the same sender within a short time window.\nUseful when DingTalk splits link cards into multiple messages."
   ),
-  messageAggregationDelayMs: z.number().int().positive().default(2e3).optional().describe("Time window in milliseconds to wait for additional messages (default 2000)")
+  messageAggregationDelayMs: z.number().int().positive().default(2e3).optional().describe("Time window in milliseconds to wait for additional messages (default 2000)"),
+  // herdr remote control (/hd commands in DMs + agent status pushes), via bridge/herdr-bridge.mjs
+  herdr: z.object({
+    enabled: z.boolean().optional().describe("Turn the /hd commands and pushes on (default true when token is set)"),
+    account: z.string().optional().describe('Only this accountId answers /hd and pushes (default "default")'),
+    bridgeUrl: z.string().optional().describe("herdr-bridge URL (default http://127.0.0.1:8377)"),
+    token: z.string().optional().describe("herdr-bridge bearer token"),
+    allowFrom: z.array(z.string()).optional().describe("staffIds allowed to use /hd and receive pushes (default dm.allowFrom)"),
+    notify: z.boolean().optional().describe("Push blocked/error/finished agent changes (default true)"),
+    pollSeconds: z.number().int().positive().optional().describe("How often to poll the bridge for changes (default 5)")
+  }).optional().describe("herdr remote control")
 }).passthrough();
 var dingTalkConfigSchema = dingTalkAccountConfigSchema.extend({
   accounts: z.record(z.string(), dingTalkAccountConfigSchema.partial().optional()).optional().describe("Named accounts that override top-level settings"),
@@ -1540,8 +1550,307 @@ async function resolveQuotedFile(config, params, log) {
 }
 
 // src/monitor.ts
+import * as fs5 from "fs";
+import * as path6 from "path";
+
+// src/herdr.ts
+init_api();
 import * as fs4 from "fs";
 import * as path5 from "path";
+var CMD_RE = /^\/hd(\s|$)/i;
+var SCREEN_MAX = 3e3;
+function isHerdrCommand(text) {
+  return CMD_RE.test(text.trim());
+}
+function isHerdrWriteCommand(text) {
+  const sub = (text.trim().split(/\s+/)[1] || "").toLowerCase();
+  return ["send", "s", "ok", "yes", "approve", "no", "esc", "int", "interrupt", "stop", "kill", "new"].includes(sub);
+}
+function herdrConfig(account) {
+  const h = account.config?.herdr;
+  if (!h || h.enabled === false || !h.token) return null;
+  if ((h.account ?? "default") !== account.accountId) return null;
+  return h;
+}
+function allowList(account, h) {
+  const list = h.allowFrom?.length ? h.allowFrom : account.config?.dm?.allowFrom ?? [];
+  return list.map(String).filter((s) => s && s !== "*");
+}
+async function bridge(h, p, body, timeoutMs = 15e4) {
+  const url = (h.bridgeUrl || "http://127.0.0.1:8377").replace(/\/$/, "") + p;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: body === void 0 ? "GET" : "POST",
+      headers: { authorization: `Bearer ${h.token}`, "content-type": "application/json" },
+      body: body === void 0 ? void 0 : JSON.stringify(body),
+      signal: ctl.signal
+    });
+    const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+    if (!res.ok && data.ok !== false) data.ok = false;
+    return data;
+  } catch (err) {
+    return { ok: false, error: `bridge unreachable: ${String(err?.message || err)}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+var STATE_ICON = { working: "\u{1F7E2}", blocked: "\u{1F534}", error: "\u274C", done: "\u2705", idle: "\u26AA" };
+var KIND_TEXT = {
+  blocked: "\u{1F534} \u9700\u8981\u4F60\u5904\u7406",
+  error: "\u274C \u51FA\u9519",
+  done: "\u2705 \u5B8C\u6210",
+  turn_end: "\u2705 \u672C\u8F6E\u5B8C\u6210",
+  exited: "\u23F9 \u5DF2\u9000\u51FA"
+};
+function cleanScreen(text, maxLines) {
+  const lines = String(text || "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").split("\n").map((l) => l.replace(/\s+$/, "").replace(/^\s{8,}/, "  ").replace(/\s{8,}/g, "  ")).filter((l, i, a) => l || (a[i - 1] ?? "") !== "");
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  let out = lines.slice(-maxLines).join("\n");
+  if (out.length > SCREEN_MAX) out = "\u2026" + out.slice(-SCREEN_MAX);
+  return out;
+}
+function fmtLs(d) {
+  if (!d.ok) return `\u274C ${d.error || d.out || "ls failed"}`;
+  const machines = (d.machines || []).map((m) => `${m.name}:${m.state === "connected" ? "\u5728\u7EBF" : m.state}`).join("  ");
+  const rows = (d.terminals || []).map((t) => {
+    const icon = t.status ? STATE_ICON[t.status] || "\u2022" : "\u25AB\uFE0F";
+    const what = t.app || t.agent || "";
+    const label = t.name ? ` (${t.name})` : "";
+    const msg = t.msg ? `  ${String(t.msg).slice(0, 60)}` : "";
+    return `${icon} ${t.t}${label}  ${what}  ${t.where || t.cwd || ""}${msg}`;
+  });
+  return [`\u673A\u5668  ${machines || "\u4EC5\u672C\u673A"}`, ...rows.length ? rows : ["\uFF08\u6CA1\u6709\u7EC8\u7AEF\uFF09"]].join("\n");
+}
+var HELP = [
+  "herdr \u9065\u63A7\uFF08\u53EA\u8BA4\u79C1\u804A\uFF09",
+  "/hd ls                       \u5217\u51FA\u6240\u6709\u7EC8\u7AEF\u548C agent \u72B6\u6001",
+  "/hd read <t> [\u884C\u6570]          \u8BFB\u5C4F\uFF0C\u9ED8\u8BA4 30 \u884C",
+  "/hd send <t> <\u5185\u5BB9>          \u53D1\u7ED9 agent\uFF08\u8D34\u5165\u5E76\u56DE\u8F66\uFF09",
+  "/hd ok <t> [\u9009\u9879]            \u6279\u51C6\uFF1A\u9ED8\u8BA4\u56DE\u8F66\uFF0C\u6216\u6309 1/2/y",
+  "/hd no <t>                   \u62D2\u7EDD/\u8FD4\u56DE\uFF08Esc\uFF09",
+  "/hd int <t>                  \u4E2D\u65AD\u5F53\u524D\u56DE\u5408\uFF08Ctrl+C\uFF09",
+  "/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>   \u8D77\u65B0 agent",
+  "/hd kill <t>                 \u7ED3\u675F\u7EC8\u7AEF",
+  "/hd digest                   \u4ECA\u65E5\u5DE5\u4F5C\u65F6\u957F / \u5361\u4F4F\u6B21\u6570",
+  "<t> \u7528 /hd ls \u91CC\u7684\u5730\u5740\uFF0C\u5982 dev/t12 \u6216 v172/t5\uFF0C\u4E5F\u53EF\u7528\u540D\u5B57",
+  "\u673A\u5668: dev\uFF08\u9ED8\u8BA4 Codex\uFF09\xB7 v172\uFF08\u9ED8\u8BA4 Claude\uFF09\uFF1B\u9879\u76EE: x3analyze / grfal / skills",
+  "\u6A21\u677F: worker advisor verifier\uFF0C\u52A0 -codex \u7528 Codex"
+].join("\n");
+async function handleHerdrCommand(params) {
+  const { account, senderId, isDm, text, reply, log } = params;
+  if (!isHerdrCommand(text)) return false;
+  const h = herdrConfig(account);
+  if (!h) return false;
+  if (!isDm) return true;
+  if (!allowList(account, h).includes(String(senderId))) {
+    log?.info?.(`[dingtalk][herdr] denied /hd from ${senderId}`);
+    return true;
+  }
+  const parts = text.trim().split(/\s+/);
+  const sub = (parts[1] || "help").toLowerCase();
+  const t = parts[2];
+  const rest = (n) => text.trim().split(/\s+/).slice(n).join(" ").trim();
+  const tail = (n) => {
+    const m = text.trim().match(new RegExp(`^(?:\\S+\\s+){${n}}([\\s\\S]*)$`));
+    return (m?.[1] ?? "").trim();
+  };
+  let out;
+  try {
+    switch (sub) {
+      case "ls":
+      case "list":
+      case "agents":
+        out = fmtLs(await bridge(h, "/ls"));
+        break;
+      case "read":
+      case "r": {
+        if (!t) {
+          out = "\u7528\u6CD5\uFF1A/hd read <t> [\u884C\u6570]";
+          break;
+        }
+        const n = Math.min(Math.max(parseInt(parts[3] || "30", 10) || 30, 1), 120);
+        const d = await bridge(h, "/read", { t, lines: n + 20 });
+        out = d.ok ? `\u{1F4DF} ${t}
+${cleanScreen(d.text, n) || "\uFF08\u7A7A\u5C4F\uFF09"}` : `\u274C ${d.text || d.error}`;
+        break;
+      }
+      case "send":
+      case "s": {
+        const body = tail(3);
+        if (!t || !body) {
+          out = "\u7528\u6CD5\uFF1A/hd send <t> <\u5185\u5BB9>";
+          break;
+        }
+        const d = await bridge(h, "/send", { t, text: body });
+        out = d.ok ? `\u{1F4E8} \u5DF2\u53D1\u7ED9 ${t}` : `\u274C ${JSON.stringify(d.out || d.error).slice(0, 300)}`;
+        break;
+      }
+      case "ok":
+      case "yes":
+      case "approve": {
+        if (!t) {
+          out = "\u7528\u6CD5\uFF1A/hd ok <t> [\u9009\u9879]";
+          break;
+        }
+        const key = parts[3] || "enter";
+        const d = await bridge(h, "/keys", { t, keys: [key] });
+        out = d.ok ? `\u{1F44D} ${t} \u5DF2\u6309 ${key}` : `\u274C ${d.out || d.error}`;
+        break;
+      }
+      case "no":
+      case "esc": {
+        if (!t) {
+          out = "\u7528\u6CD5\uFF1A/hd no <t>";
+          break;
+        }
+        const d = await bridge(h, "/keys", { t, keys: ["esc"] });
+        out = d.ok ? `\u21A9\uFE0F ${t} \u5DF2\u6309 Esc` : `\u274C ${d.out || d.error}`;
+        break;
+      }
+      case "int":
+      case "interrupt":
+      case "stop": {
+        if (!t) {
+          out = "\u7528\u6CD5\uFF1A/hd int <t>";
+          break;
+        }
+        const d = await bridge(h, "/interrupt", { t });
+        out = d.ok ? `\u23F8 \u5DF2\u4E2D\u65AD ${t}` : `\u274C ${JSON.stringify(d.out || d.error).slice(0, 300)}`;
+        break;
+      }
+      case "kill": {
+        if (!t) {
+          out = "\u7528\u6CD5\uFF1A/hd kill <t>";
+          break;
+        }
+        const d = await bridge(h, "/kill", { t });
+        out = d.ok ? `\u23F9 \u5DF2\u7ED3\u675F ${t}` : `\u274C ${d.out || d.error}`;
+        break;
+      }
+      case "new": {
+        const machine = parts[2], project = parts[3];
+        let tplIdx = 4, template;
+        if (/^(worker|advisor|verifier)(-codex)?$/i.test(parts[4] || "")) {
+          template = parts[4].toLowerCase();
+          tplIdx = 5;
+        }
+        const task = tail(tplIdx);
+        if (!machine || !project || !task) {
+          out = "\u7528\u6CD5\uFF1A/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>\n\u4F8B\uFF1A/hd new dev x3analyze \u770B\u4E0B\u4ECA\u5929\u7684\u5DE5\u5355\u6709\u6CA1\u6709\u65B0\u544A\u8B66";
+          break;
+        }
+        await reply(`\u23F3 \u6B63\u5728 ${machine} \u7684 ${project} \u8D77 agent\u2026`);
+        const d = await bridge(h, "/new", { machine, project, template, task });
+        out = d.ok ? `\u{1F680} \u5DF2\u542F\u52A8 ${d.address}\uFF08${d.template}\uFF0C${d.cwd}\uFF09
+\u5B8C\u6210\u6216\u9700\u8981\u4F60\u65F6\u4F1A\u63A8\u9001\uFF1B\u67E5\u770B\uFF1A/hd read ${d.address}` : `\u274C \u542F\u52A8\u5931\u8D25\uFF1A${d.error || JSON.stringify(d.out || d.sent).slice(0, 400)}`;
+        break;
+      }
+      case "digest": {
+        const d = await bridge(h, "/digest");
+        if (!d.ok) {
+          out = `\u274C ${d.error}`;
+          break;
+        }
+        const rows = (d.agents || []).filter((a) => a.workingMin || a.blocks || a.turns);
+        out = rows.length ? [`\u{1F4CA} ${d.date} agent \u6D3B\u52A8`, ...rows.map((a) => `${a.t} ${a.app || ""} ${a.where || ""}  \u5DE5\u4F5C ${a.workingMin} \u5206\u949F \xB7 \u5361\u4F4F ${a.blocks} \u6B21 \xB7 \u5B8C\u6210 ${a.turns} \u8F6E`)].join("\n") : `\u{1F4CA} ${d.date} \u8FD8\u6CA1\u6709 agent \u6D3B\u52A8`;
+        break;
+      }
+      default:
+        out = HELP;
+    }
+  } catch (err) {
+    out = `\u274C ${String(err?.message || err)}`;
+  }
+  await reply(out);
+  log?.info?.(`[dingtalk][herdr] ${sub} ${rest(2).slice(0, 60)}`);
+  return true;
+}
+function cursorFile(accountId) {
+  return resolveDingTalkCacheFile(`herdr-cursor-${accountId}.json`);
+}
+function readCursor(accountId) {
+  try {
+    return JSON.parse(fs4.readFileSync(cursorFile(accountId), "utf8")).after ?? null;
+  } catch {
+    return null;
+  }
+}
+function writeCursor(accountId, after) {
+  const f = cursorFile(accountId);
+  fs4.mkdirSync(path5.dirname(f), { recursive: true });
+  fs4.writeFileSync(f + ".tmp", JSON.stringify({ after, at: (/* @__PURE__ */ new Date()).toISOString() }));
+  fs4.renameSync(f + ".tmp", f);
+}
+function startHerdrNotifier(params) {
+  const { account, abortSignal, log } = params;
+  const h = herdrConfig(account);
+  if (!h || h.notify === false) return;
+  const users = allowList(account, h);
+  if (!users.length || !account.clientId || !account.clientSecret) {
+    log?.warn?.("[dingtalk][herdr] notifier off: no allowFrom users or credentials");
+    return;
+  }
+  const robotCode = account.robotCode || account.clientId;
+  const every = Math.max(2, h.pollSeconds ?? 5) * 1e3;
+  let after = readCursor(account.accountId);
+  let stopped = false;
+  let timer = null;
+  abortSignal?.addEventListener("abort", () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  }, { once: true });
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const d = await bridge(h, `/changes?after=${after ?? 0}`, void 0, 2e4);
+      if (d.ok) {
+        if (after === null) {
+          after = d.last ?? 0;
+          writeCursor(account.accountId, after);
+        } else if (d.changes?.length) {
+          const lines = [];
+          for (const c of d.changes) {
+            let s = `${KIND_TEXT[c.kind] || c.kind}  ${c.t}${c.name ? ` (${c.name})` : ""}  ${c.app || ""}  ${c.where || ""}`;
+            if (c.msg) s += `
+${String(c.msg).slice(0, 200)}`;
+            if (c.kind === "blocked" || c.kind === "turn_end" || c.kind === "done") {
+              const r = await bridge(h, "/read", { t: c.t, lines: 40 }, 2e4);
+              const screen = r.ok ? cleanScreen(r.text, c.kind === "blocked" ? 14 : 8) : "";
+              if (screen) s += `
+\u2504\u2504\u2504
+${screen}`;
+            }
+            if (c.kind === "blocked") s += `
+\u2192 /hd ok ${c.t} \u6279\u51C6 \xB7 /hd read ${c.t} \u770B\u5168\u5C4F`;
+            lines.push(s);
+          }
+          const text = lines.join("\n\n").slice(0, 6e3);
+          let delivered = true;
+          for (const userId of users) {
+            const r = await sendDMMessageWithKey({ clientId: account.clientId, clientSecret: account.clientSecret, robotCode, userId, text, format: "text" });
+            if (!r.ok) {
+              delivered = false;
+              log?.warn?.(`[dingtalk][herdr] push to ${userId} failed: ${r.error}`);
+            }
+          }
+          if (delivered || Date.now() - (d.changes[0].at || 0) > 10 * 6e4) {
+            after = d.changes[d.changes.length - 1].id;
+            writeCursor(account.accountId, after);
+          }
+        }
+      }
+    } catch (err) {
+      log?.warn?.(`[dingtalk][herdr] poll error: ${String(err)}`);
+    }
+    if (!stopped) timer = setTimeout(tick, every);
+  };
+  log?.info?.(`[dingtalk][herdr] notifier on for account ${account.accountId} \u2192 ${users.length} user(s), every ${every / 1e3}s`);
+  timer = setTimeout(tick, 1e3);
+}
+
+// src/monitor.ts
 var RUNTIME_CONFIG_SUBPATHS = [
   "openclaw/plugin-sdk/runtime-config-snapshot",
   "openclaw/plugin-sdk/config-runtime"
@@ -1646,8 +1955,8 @@ var OUTBOUND_TIME_CACHE_MAX = 100;
 var OUTBOUND_TIME_WINDOW_MS = 1e4;
 function loadMsgCache() {
   try {
-    if (fs4.existsSync(MSG_CACHE_FILE)) {
-      const raw = fs4.readFileSync(MSG_CACHE_FILE, "utf-8");
+    if (fs5.existsSync(MSG_CACHE_FILE)) {
+      const raw = fs5.readFileSync(MSG_CACHE_FILE, "utf-8");
       const entries = JSON.parse(raw);
       const cutoff = Date.now() - MSG_CACHE_TTL_MS;
       let loaded = 0;
@@ -1669,10 +1978,10 @@ function scheduleSaveCache() {
   _saveCacheTimer = setTimeout(() => {
     _saveCacheTimer = null;
     try {
-      const dir = path5.dirname(MSG_CACHE_FILE);
-      if (!fs4.existsSync(dir)) fs4.mkdirSync(dir, { recursive: true });
+      const dir = path6.dirname(MSG_CACHE_FILE);
+      if (!fs5.existsSync(dir)) fs5.mkdirSync(dir, { recursive: true });
       const entries = [...msgCache.entries()];
-      fs4.writeFileSync(MSG_CACHE_FILE, JSON.stringify(entries), "utf-8");
+      fs5.writeFileSync(MSG_CACHE_FILE, JSON.stringify(entries), "utf-8");
     } catch (err) {
       console.warn(`[dingtalk] Failed to save msg cache: ${err}`);
     }
@@ -1772,6 +2081,7 @@ async function startDingTalkMonitor(ctx) {
     cleanupOldMedia();
   }, 60 * 60 * 1e3);
   const queueCleanupInterval = setInterval(cleanupExpiredSessionQueues, 6e4);
+  startHerdrNotifier({ account, abortSignal, log });
   if (abortSignal) {
     abortSignal.addEventListener("abort", () => {
       clearInterval(cleanupInterval);
@@ -2570,6 +2880,20 @@ ${rawBody}`;
         return;
       }
     }
+  }
+  if (isHerdrCommand(rawBody)) {
+    const isWrite = isHerdrWriteCommand(rawBody);
+    if (isWrite && isContentDuplicate(senderId, rawBody, log)) return;
+    if (isWrite) markContentProcessed(senderId, rawBody);
+    const handled = await handleHerdrCommand({
+      account,
+      senderId,
+      isDm,
+      text: rawBody,
+      log,
+      reply: (text) => msg.sessionWebhook ? sendViaSessionWebhook(msg.sessionWebhook, text) : Promise.resolve()
+    });
+    if (handled) return;
   }
   if (isContentDuplicate(senderId, rawBody, log)) {
     return;
