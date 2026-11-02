@@ -135,7 +135,7 @@ Access denied. Your staffId: 050914XXXXXXXXX
 | `/hd read <t> [行数]` | 读屏 |
 | `/hd reply <t>` | 先看屏，下一条消息转给它（5 分钟内） |
 | `/hd send <t> <内容>` | 直接发给 agent |
-| `/hd ok <t> [选项]` / `/hd trust <t>` / `/hd no <t>` | 批准一次 / 始终允许 / 拒绝 |
+| `/hd ok <t> [选项] [#编号]` / `/hd trust <t> [#编号]` / `/hd no <t> [#编号]` | 批准一次 / 始终允许 / 拒绝；带 `#编号` 时只在 agent 仍卡在这个提问上才按键 |
 | `/hd int <t>` / `/hd kill <t>` | 中断当前回合 / 结束终端 |
 | `/hd new <机器> <项目> [模板] <任务>` | 用模板在已登记项目里起新 agent |
 | `/hd digest` | 今日工作时长、卡住次数、完成轮数 |
@@ -143,6 +143,8 @@ Access denied. Your staffId: 050914XXXXXXXXX
 回复和推送附带可复制发送的 `/hd` 操作指令。1.9.0 使用的 `dtmd://` 链接已在钉钉 Windows 客户端出现“此链接无法识别”，1.9.1 停止输出这些链接。**当前没有原生可点击操作按钮**；它需要单独接入互动卡片模板和 Stream 卡片回调，并完成客户端实测。只在私聊、只对 `allowFrom`（默认 `dm.allowFrom`）、只在 `herdr.account` 指定的账号生效。需要在 gateway 主机上部署 `bridge/herdr-bridge.mjs`，见 [bridge/README.md](./bridge/README.md)。
 
 ## 📝 更新日志
+
+**v1.10.0** — 批准/拒绝带提问编号，过期的选择不再按到新问题或工作中的 agent
 
 **v1.9.x** — `/hd reply` / `/hd trust`；1.9.1 用可复制操作指令替代不兼容的链接
 

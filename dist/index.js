@@ -1622,11 +1622,27 @@ function mdScreen(screen) {
   const lines = screen.split("\n").filter((l) => l.trim());
   return lines.length ? lines.map((l) => `> ${safe(l)}`).join("  \n") : "> \uFF08\u7A7A\u5C4F\uFF09";
 }
-function actionsFor(t, state) {
+function actionsFor(t, state, prompt) {
   const a = [cmdLink("\u8BFB\u5C4F", `/hd read ${t}`), cmdLink("\u56DE\u590D", `/hd reply ${t}`)];
-  if (state === "blocked") a.unshift(cmdLink("\u6279\u51C6", `/hd ok ${t}`), cmdLink("\u59CB\u7EC8\u5141\u8BB8", `/hd trust ${t}`), cmdLink("\u62D2\u7EDD", `/hd no ${t}`));
+  const tag = prompt ? ` #${prompt}` : "";
+  if (state === "blocked") a.unshift(cmdLink("\u6279\u51C6", `/hd ok ${t}${tag}`), cmdLink("\u59CB\u7EC8\u5141\u8BB8", `/hd trust ${t}${tag}`), cmdLink("\u62D2\u7EDD", `/hd no ${t}${tag}`));
   if (state === "working") a.push(cmdLink("\u4E2D\u65AD", `/hd int ${t}`));
   return a.join(" \xB7 ");
+}
+var PROMPT_RE = /^#(\d+)$/;
+function splitPromptTag(parts) {
+  const rest = parts.slice(3);
+  const tag = rest.find((p) => PROMPT_RE.test(p));
+  return { args: rest.filter((p) => !PROMPT_RE.test(p)), expect: tag ? Number(tag.slice(1)) : void 0 };
+}
+function staleMd(t, d) {
+  const now = d.state === "blocked" ? `\u5B83\u73B0\u5728\u5728\u95EE\u53E6\u4E00\u4E2A\u95EE\u9898 #${d.prompt}` : `\u5B83\u73B0\u5728${d.state ? `\u300C${STATE_TEXT[d.state] || d.state}\u300D` : "\u72B6\u6001\u672A\u77E5"}`;
+  const screen = d.screen ? `
+
+${mdScreen(cleanScreen(d.screen, 10))}` : "";
+  return `\u26A0\uFE0F ${t} \u7684\u63D0\u95EE #${d.expected} \u5DF2\u8FC7\u671F\uFF0C**\u6CA1\u6709\u6309\u952E**\uFF08${now}\uFF09${screen}
+
+${actionsFor(t, d.state, d.prompt)}`;
 }
 function mdLs(d) {
   if (!d.ok) return `\u274C ${d.error || d.out || "ls failed"}`;
@@ -1642,7 +1658,7 @@ function mdLs(d) {
       const icon = STATE_ICON[t.status] || "\u2022";
       const msg = t.msg ? ` \xB7 ${String(t.msg).slice(0, 60)}` : "";
       out.push(`**${icon} ${t.t}**${t.name ? ` (${t.name})` : ""} ${t.app || t.agent || ""} \xB7 ${t.where || t.cwd || ""} \xB7 ${STATE_TEXT[t.status] || t.status || ""}${msg}  
-${actionsFor(t.t, t.status)}`);
+${actionsFor(t.t, t.status, t.prompt)}`);
     }
   } else {
     out.push("\u6CA1\u6709\u5728\u8DD1\u7684 agent");
@@ -1660,6 +1676,7 @@ var HELP_MD = [
   "- `/hd reply <t>` \u5148\u770B\u5C4F\uFF0C\u4F60\u7684\u4E0B\u4E00\u6761\u6D88\u606F\u8F6C\u7ED9\u5B83\uFF085 \u5206\u949F\u5185\uFF09",
   "- `/hd send <t> <\u5185\u5BB9>` \u76F4\u63A5\u53D1\u7ED9 agent",
   "- `/hd ok <t> [\u9009\u9879]` \u6279\u51C6\uFF1B`/hd trust <t>` \u59CB\u7EC8\u5141\u8BB8\uFF1B`/hd no <t>` \u62D2\u7EDD",
+  "  \uFF08\u63A8\u9001\u91CC\u7684\u6307\u4EE4\u5E26 `#\u7F16\u53F7`\uFF1Aagent \u5DF2\u7ECF\u6362\u4E86\u95EE\u9898\u6216\u4E0D\u518D\u7B49\u5F85\u65F6\u4F1A\u62D2\u7EDD\u6267\u884C\uFF0C\u4E0D\u4F1A\u6309\u9519\uFF09",
   "- `/hd int <t>` \u4E2D\u65AD\uFF1B`/hd kill <t>` \u7ED3\u675F",
   "- `/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>` \u8D77\u65B0 agent",
   "- `/hd digest` \u4ECA\u65E5\u6D3B\u52A8\uFF1B`/hd cancel` \u53D6\u6D88\u5F85\u56DE\u590D",
@@ -1730,10 +1747,11 @@ async function handleHerdrCommand(params) {
         }
         await reply(`\u{1F4DF} ${t}
 ${cleanScreen(d.text, n) || "\uFF08\u7A7A\u5C4F\uFF09"}`);
-        const st = (await bridge(h, "/ls")).terminals?.find((x) => x.t === t)?.status ?? null;
+        const row = (await bridge(h, "/ls")).terminals?.find((x) => x.t === t);
+        const st = row?.status ?? null;
         await md(`${t} ${st ? STATE_TEXT[st] || st : ""}
 
-${actionsFor(t, st)} \xB7 ${cmdLink("\u66F4\u591A", `/hd read ${t} 80`)}`, `${t} \u64CD\u4F5C`);
+${actionsFor(t, st, row?.prompt)} \xB7 ${cmdLink("\u66F4\u591A", `/hd read ${t} 80`)}`, `${t} \u64CD\u4F5C`);
         break;
       }
       case "reply":
@@ -1788,8 +1806,13 @@ ${actionsFor(t, null)}` : `\u274C ${JSON.stringify(d.out || d.error).slice(0, 30
           await reply("\u7528\u6CD5\uFF1A/hd ok <t> [\u9009\u9879]");
           break;
         }
-        const key = parts[3] || "enter";
-        const d = await bridge(h, "/keys", { t, keys: [key] });
+        const { args, expect } = splitPromptTag(parts);
+        const key = args[0] || "enter";
+        const d = await bridge(h, "/keys", { t, keys: [key], ...expect ? { expect } : {} });
+        if (d.stale) {
+          await md(staleMd(t, d), `${t} \u63D0\u95EE\u5DF2\u8FC7\u671F`);
+          break;
+        }
         await md(d.ok ? `\u{1F44D} ${t} \u5DF2\u6309 ${key}
 
 ${actionsFor(t, null)}` : `\u274C ${d.out || d.error}`, `${t} \u5DF2\u6279\u51C6`);
@@ -1801,7 +1824,12 @@ ${actionsFor(t, null)}` : `\u274C ${d.out || d.error}`, `${t} \u5DF2\u6279\u51C6
           await reply("\u7528\u6CD5\uFF1A/hd trust <t>");
           break;
         }
-        const d = await bridge(h, "/trust", { t });
+        const { expect } = splitPromptTag(parts);
+        const d = await bridge(h, "/trust", { t, ...expect ? { expect } : {} });
+        if (d.stale) {
+          await md(staleMd(t, d), `${t} \u63D0\u95EE\u5DF2\u8FC7\u671F`);
+          break;
+        }
         await md(
           d.ok ? `\u{1F6E1} ${t} \u5DF2\u9009\u300C${d.option}\u300D\uFF08\u6309 ${d.key}\uFF09
 
@@ -1820,7 +1848,12 @@ ${cmdLink("\u6539\u4E3A\u6279\u51C6\u4E00\u6B21", `/hd ok ${t}`)} \xB7 ${cmdLink
           await reply("\u7528\u6CD5\uFF1A/hd no <t>");
           break;
         }
-        const d = await bridge(h, "/keys", { t, keys: ["esc"] });
+        const { expect } = splitPromptTag(parts);
+        const d = await bridge(h, "/keys", { t, keys: ["esc"], ...expect ? { expect } : {} });
+        if (d.stale) {
+          await md(staleMd(t, d), `${t} \u63D0\u95EE\u5DF2\u8FC7\u671F`);
+          break;
+        }
         await md(d.ok ? `\u21A9\uFE0F ${t} \u5DF2\u6309 Esc
 
 ${actionsFor(t, null)}` : `\u274C ${d.out || d.error}`, `${t} \u5DF2\u62D2\u7EDD`);
@@ -1951,7 +1984,7 @@ ${mdScreen(screen)}`;
             }
             if (c.kind !== "exited") s += `
 
-${actionsFor(c.t, state)}`;
+${actionsFor(c.t, state, c.prompt)}`;
             blocks.push(s);
           }
           const first = d.changes[0];

@@ -6,15 +6,21 @@
 //   GET  /ls                          agents and terminals (live)
 //   POST /read      {t, lines}        screen text
 //   POST /send      {t, text}         paste + enter
-//   POST /keys      {t, keys[]}       keys (enter, esc, 1, y, ctrl+c ...)
+//   POST /keys      {t, keys[], expect?}  keys (enter, esc, 1, y, ctrl+c ...)
+//   POST /trust     {t, expect?}      pick the prompt's "don't ask again / always" option
 //   POST /interrupt {t}
 //   POST /new       {machine, project|cwd, template?, task}
 //   POST /kill      {t}
 //   GET  /changes?after=N             status changes worth a push (durable ids)
 //   GET  /digest                      today's working time / blocks / turns per agent
 //
+// Every blocked episode gets a prompt id (/ls `prompt`, change `prompt`). A key sent with
+// `expect` is refused unless the agent is still blocked on that same prompt, so a choice made
+// on an old push can't land on a newer question or hit a working agent.
+//
 // Config: ~/.config/herdr-bridge/config.json   State: ~/.local/state/herdr-bridge/state.json
 import http from 'node:http';
+import { pathToFileURL } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,7 +30,7 @@ import { spawn, execFile } from 'node:child_process';
 
 const HOME = os.homedir();
 const CONFIG_PATH = process.env.HERDR_BRIDGE_CONFIG || path.join(HOME, '.config/herdr-bridge/config.json');
-const STATE_PATH = path.join(HOME, '.local/state/herdr-bridge/state.json');
+const STATE_PATH = process.env.HERDR_BRIDGE_STATE || path.join(HOME, '.local/state/herdr-bridge/state.json');
 const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 const HC = cfg.hc || path.join(HOME, '.local/bin/hc');
 const PORT = cfg.port || 8377;
@@ -39,7 +45,7 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')); } catch { return {}; }
 }
-const st = Object.assign({ nextId: 1, changes: [], last: {}, day: null }, loadState());
+const st = Object.assign({ nextId: 1, changes: [], last: {}, day: null, prompts: {}, promptSeq: 0 }, loadState());
 let saveTimer = null;
 function save() {
   clearTimeout(saveTimer);
@@ -84,19 +90,28 @@ function noteChange(addr, kind, extra = {}) {
   log('change', JSON.stringify(ch));
 }
 
-function applyStatus(addr, status, silent) {
+const promptKey = (s) => `${s?.kind || ''}|${s?.msg || ''}`;
+
+export function applyStatus(addr, status, silent) {
   const prev = st.last[addr] || { state: null, since: Date.now() };
   const next = status?.state || null;
-  if (prev.state === next) return;
+  // a new question: entering blocked, or still blocked but asking something else
+  const newAsk = next === 'blocked' && (prev.state !== 'blocked' || st.prompts[addr]?.key !== promptKey(status));
+  if (prev.state === next && !newAsk) return;
   const now = Date.now();
   const b = dayBucket(addr);
   const r = terms.get(addr);
   b.app = appOf(r) || b.app; b.where = whereOf(r) || b.where;
-  if (prev.state === 'working') b.workingMs += now - (prev.since || now);
-  if (next === 'blocked') b.blocks++;
-  st.last[addr] = { state: next, since: now };
+  if (prev.state !== next) {
+    if (prev.state === 'working') b.workingMs += now - (prev.since || now);
+    st.last[addr] = { state: next, since: now };
+  }
+  if (newAsk) {
+    b.blocks++;
+    st.prompts[addr] = { id: ++st.promptSeq, key: promptKey(status), at: now };
+  } else if (next !== 'blocked') delete st.prompts[addr];
   if (!silent) {
-    if (next === 'blocked' && NOTIFY_STATES.has('blocked')) noteChange(addr, 'blocked', { msg: status?.msg || null });
+    if (newAsk && NOTIFY_STATES.has('blocked')) noteChange(addr, 'blocked', { msg: status?.msg || null, prompt: st.prompts[addr].id });
     else if (next === 'error' && NOTIFY_STATES.has('error')) noteChange(addr, 'error', { msg: status?.msg || null });
     else if (next === 'done' && NOTIFY_STATES.has('done')) { b.turns++; noteChange(addr, 'done'); }
     else if (prev.state === 'working' && next === 'idle' && NOTIFY_STATES.has('turn_end')) { b.turns++; noteChange(addr, 'turn_end'); }
@@ -133,7 +148,7 @@ function startEvents() {
         const wasAgent = r && (r.reported || st.last[addr]?.state);
         if (r) { r.state = 'finished'; r.exit_code = d.exit_code; }
         if (wasAgent && NOTIFY_STATES.has('exited')) noteChange(addr, 'exited', { exit_code: d.exit_code, reason: d.reason });
-        delete st.last[addr]; save();
+        delete st.last[addr]; delete st.prompts[addr]; save();
         break;
       }
     }
@@ -160,6 +175,21 @@ export function findTrustOption(screen) {
     if (m) hit = { key: m[1], text: m[2].trim().slice(0, 120) };
   }
   return hit;
+}
+
+/** null when the agent is still blocked on prompt `expect` (or no `expect` was given), else why not. */
+export function checkPrompt(t, expect) {
+  if (expect === undefined || expect === null || expect === '') return null;
+  const want = Number(expect);
+  const state = st.last[t]?.state ?? null;
+  const prompt = state === 'blocked' ? st.prompts[t]?.id ?? null : null;
+  if (Number.isInteger(want) && prompt === want) return null;
+  return { ok: false, stale: true, expected: expect, state, prompt, error: `prompt #${expect} is no longer on screen` };
+}
+
+async function staleReply(t, stale) {
+  const r = await hc(['read', t, '--lines', '0'], { timeoutMs: 20000 });
+  return { ...stale, screen: r.code ? '' : r.out.split('\n').slice(-14).join('\n') };
 }
 
 const TERM_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/;
@@ -203,7 +233,9 @@ async function route(req, url, body) {
     const d = parse(r.out); if (!d) return { ok: false, out: r.out || r.err };
     const list = (d.terminals || []).map((t) => {
       const v = terms.get(t.address) || {};
-      return { t: t.address, name: t.name, agent: t.agent, cwd: t.cwd, where: whereOf(v) || null, status: v.status?.state || null, app: v.status?.app || null, msg: v.status?.msg || null };
+      const status = v.status?.state || null;
+      const prompt = status === 'blocked' ? st.prompts[t.address]?.id ?? null : null;
+      return { t: t.address, name: t.name, agent: t.agent, cwd: t.cwd, where: whereOf(v) || null, status, prompt, app: v.status?.app || null, msg: v.status?.msg || null };
     });
     return { ok: true, machines: d.machines || [], terminals: list };
   }
@@ -218,12 +250,17 @@ async function route(req, url, body) {
   if (p === '/keys') {
     const keys = (Array.isArray(body.keys) ? body.keys : [body.keys]).map(String).filter((k) => /^[A-Za-z0-9+_-]{1,20}$/.test(k));
     if (!keys.length) throw Object.assign(new Error('no keys'), { status: 400 });
-    const r = await hc(['keys', needT(body.t), ...keys]); return { ok: !r.code, out: r.out || r.err };
+    const t = needT(body.t);
+    const stale = checkPrompt(t, body.expect);
+    if (stale) return staleReply(t, stale);
+    const r = await hc(['keys', t, ...keys]); return { ok: !r.code, out: r.out || r.err };
   }
   if (p === '/interrupt') { const r = await hc(['interrupt', needT(body.t)]); return { ok: !r.code, out: parse(r.out) || r.out || r.err }; }
   if (p === '/trust') {
     // Press the bottom-most "don't ask again / always" option of the permission prompt on screen.
     const t = needT(body.t);
+    const stale = checkPrompt(t, body.expect);
+    if (stale) return staleReply(t, stale);
     const r = await hc(['read', t, '--lines', '0'], { timeoutMs: 20000 });
     if (r.code) return { ok: false, error: r.err || r.out };
     const hit = findTrustOption(r.out);
@@ -268,5 +305,8 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-startEvents();
-server.listen(PORT, '127.0.0.1', () => log(`herdr-bridge on 127.0.0.1:${PORT}, hc=${HC}, self=${cfg.self}`));
+// started as a service (not when a test imports it for applyStatus / checkPrompt)
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
+  startEvents();
+  server.listen(PORT, '127.0.0.1', () => log(`herdr-bridge on 127.0.0.1:${PORT}, hc=${HC}, self=${cfg.self}`));
+}

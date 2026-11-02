@@ -16,7 +16,7 @@ after(() => rm(scratch, { recursive: true, force: true }));
 
 const account = { accountId: 'default', config: { herdr: { token: 'test-token-only', allowFrom: ['owner'], bridgeUrl: 'http://127.0.0.1:1' } } };
 
-async function withBridge(run) {
+async function withBridge(run, answer = {}) {
   const calls = [];
   const replies = [];
   const oldFetch = globalThis.fetch;
@@ -24,7 +24,8 @@ async function withBridge(run) {
     const p = new URL(url).pathname;
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ p, body });
-    const data = p === '/ls'
+    const data = answer[p] ? answer[p](body)
+      : p === '/ls'
       ? { ok: true, machines: [], terminals: [{ t: 'dev/t4', status: 'blocked', app: 'codex' }] }
       : p === '/read' ? { ok: true, text: 'Would you like to run hostname?\n1. Yes\n2. Always\n3. No' }
       : { ok: true, option: 'Always', key: '2' };
@@ -67,3 +68,41 @@ test('reply sends the next message once, preserving newlines', async () => withB
   assert.equal(await herdr.handleHerdrPendingReply({ ...params, text: 'unrelated next message' }), false);
   assert.deepEqual(calls.filter(c => c.p === '/send'), [{ p: '/send', body: { t: 'dev/t4', text: 'line one\nline two' } }]);
 }));
+
+test('listed approvals carry the prompt id they answer', async () => withBridge(async ({ replies, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd ls' });
+  const text = replies.map(r => r.text).join('\n');
+  assert.match(text, /`\/hd ok dev\/t4 #42`/);
+  assert.match(text, /`\/hd trust dev\/t4 #42`/);
+  assert.match(text, /`\/hd no dev\/t4 #42`/);
+}, { '/ls': () => ({ ok: true, machines: [], terminals: [{ t: 'dev/t4', status: 'blocked', prompt: 42, app: 'codex' }] }) }));
+
+test('a prompt tag is passed as expect and is not mistaken for the key', async () => withBridge(async ({ calls, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd ok dev/t4 #42' });
+  await herdr.handleHerdrCommand({ ...params, text: '/hd ok dev/t4 2 #42' });
+  await herdr.handleHerdrCommand({ ...params, text: '/hd no dev/t4 #42' });
+  await herdr.handleHerdrCommand({ ...params, text: '/hd trust dev/t4 #42' });
+  assert.deepEqual(calls, [
+    { p: '/keys', body: { t: 'dev/t4', keys: ['enter'], expect: 42 } },
+    { p: '/keys', body: { t: 'dev/t4', keys: ['2'], expect: 42 } },
+    { p: '/keys', body: { t: 'dev/t4', keys: ['esc'], expect: 42 } },
+    { p: '/trust', body: { t: 'dev/t4', expect: 42 } },
+  ]);
+}));
+
+test('a stale approval says nothing was pressed and offers the current prompt', async () => withBridge(async ({ replies, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd ok dev/t4 #42' });
+  const text = replies.map(r => r.text).join('\n');
+  assert.match(text, /#42 已过期，\*\*没有按键\*\*/);
+  assert.match(text, /另一个问题 #43/);
+  assert.match(text, /`\/hd ok dev\/t4 #43`/);
+  assert.doesNotMatch(text, /已按/);
+}, { '/keys': () => ({ ok: false, stale: true, expected: 42, state: 'blocked', prompt: 43, screen: 'Run rm -rf build?\n1. Yes\n2. No' }) }));
+
+test('a stale approval on an agent that moved on offers no approval at all', async () => withBridge(async ({ replies, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd no dev/t4 #42' });
+  const text = replies.map(r => r.text).join('\n');
+  assert.match(text, /「工作中」/);
+  assert.doesNotMatch(text, /\/hd (ok|no|trust) /);
+  assert.match(text, /`\/hd int dev\/t4`/);
+}, { '/keys': () => ({ ok: false, stale: true, expected: 42, state: 'working', prompt: null, screen: '' }) }));

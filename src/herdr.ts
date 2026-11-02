@@ -111,11 +111,33 @@ function mdScreen(screen: string): string {
   return lines.length ? lines.map((l) => `> ${safe(l)}`).join("  \n") : "> （空屏）";
 }
 
-function actionsFor(t: string, state: string | null): string {
+/**
+ * Approval commands carry the prompt id (`#42`) of the question they answer; the bridge refuses
+ * them once the agent has moved on, so an old push can't answer a newer question.
+ */
+function actionsFor(t: string, state: string | null, prompt?: number | null): string {
   const a = [cmdLink("读屏", `/hd read ${t}`), cmdLink("回复", `/hd reply ${t}`)];
-  if (state === "blocked") a.unshift(cmdLink("批准", `/hd ok ${t}`), cmdLink("始终允许", `/hd trust ${t}`), cmdLink("拒绝", `/hd no ${t}`));
+  const tag = prompt ? ` #${prompt}` : "";
+  if (state === "blocked") a.unshift(cmdLink("批准", `/hd ok ${t}${tag}`), cmdLink("始终允许", `/hd trust ${t}${tag}`), cmdLink("拒绝", `/hd no ${t}${tag}`));
   if (state === "working") a.push(cmdLink("中断", `/hd int ${t}`));
   return a.join(" · ");
+}
+
+const PROMPT_RE = /^#(\d+)$/;
+
+/** Arguments after `/hd <sub> <t>`, minus a `#id` prompt tag, and that tag's id. */
+function splitPromptTag(parts: string[]): { args: string[]; expect?: number } {
+  const rest = parts.slice(3);
+  const tag = rest.find((p) => PROMPT_RE.test(p));
+  return { args: rest.filter((p) => !PROMPT_RE.test(p)), expect: tag ? Number(tag.slice(1)) : undefined };
+}
+
+function staleMd(t: string, d: any): string {
+  const now = d.state === "blocked"
+    ? `它现在在问另一个问题 #${d.prompt}`
+    : `它现在${d.state ? `「${STATE_TEXT[d.state] || d.state}」` : "状态未知"}`;
+  const screen = d.screen ? `\n\n${mdScreen(cleanScreen(d.screen, 10))}` : "";
+  return `⚠️ ${t} 的提问 #${d.expected} 已过期，**没有按键**（${now}）${screen}\n\n${actionsFor(t, d.state, d.prompt)}`;
 }
 
 function mdLs(d: any): string {
@@ -131,7 +153,7 @@ function mdLs(d: any): string {
     for (const t of agents) {
       const icon = STATE_ICON[t.status] || "•";
       const msg = t.msg ? ` · ${String(t.msg).slice(0, 60)}` : "";
-      out.push(`**${icon} ${t.t}**${t.name ? ` (${t.name})` : ""} ${t.app || t.agent || ""} · ${t.where || t.cwd || ""} · ${STATE_TEXT[t.status] || t.status || ""}${msg}  \n${actionsFor(t.t, t.status)}`);
+      out.push(`**${icon} ${t.t}**${t.name ? ` (${t.name})` : ""} ${t.app || t.agent || ""} · ${t.where || t.cwd || ""} · ${STATE_TEXT[t.status] || t.status || ""}${msg}  \n${actionsFor(t.t, t.status, t.prompt)}`);
     }
   } else {
     out.push("没有在跑的 agent");
@@ -150,6 +172,7 @@ const HELP_MD = [
   "- `/hd reply <t>` 先看屏，你的下一条消息转给它（5 分钟内）",
   "- `/hd send <t> <内容>` 直接发给 agent",
   "- `/hd ok <t> [选项]` 批准；`/hd trust <t>` 始终允许；`/hd no <t>` 拒绝",
+  "  （推送里的指令带 `#编号`：agent 已经换了问题或不再等待时会拒绝执行，不会按错）",
   "- `/hd int <t>` 中断；`/hd kill <t>` 结束",
   "- `/hd new <机器> <项目> [模板] <任务>` 起新 agent",
   "- `/hd digest` 今日活动；`/hd cancel` 取消待回复",
@@ -233,8 +256,9 @@ export async function handleHerdrCommand(params: {
         const d = await bridge(h, "/read", { t, lines: n, history: n > 40 });
         if (!d.ok) { await reply(`❌ ${d.text || d.error}`); break; }
         await reply(`📟 ${t}\n${cleanScreen(d.text, n) || "（空屏）"}`);
-        const st = (await bridge(h, "/ls")).terminals?.find((x: any) => x.t === t)?.status ?? null;
-        await md(`${t} ${st ? STATE_TEXT[st] || st : ""}\n\n${actionsFor(t, st)} · ${cmdLink("更多", `/hd read ${t} 80`)}`, `${t} 操作`);
+        const row = (await bridge(h, "/ls")).terminals?.find((x: any) => x.t === t);
+        const st = row?.status ?? null;
+        await md(`${t} ${st ? STATE_TEXT[st] || st : ""}\n\n${actionsFor(t, st, row?.prompt)} · ${cmdLink("更多", `/hd read ${t} 80`)}`, `${t} 操作`);
         break;
       }
       case "reply": case "r": {
@@ -266,14 +290,18 @@ export async function handleHerdrCommand(params: {
       }
       case "ok": case "yes": case "approve": {
         if (!t) { await reply("用法：/hd ok <t> [选项]"); break; }
-        const key = parts[3] || "enter";
-        const d = await bridge(h, "/keys", { t, keys: [key] });
+        const { args, expect } = splitPromptTag(parts);
+        const key = args[0] || "enter";
+        const d = await bridge(h, "/keys", { t, keys: [key], ...(expect ? { expect } : {}) });
+        if (d.stale) { await md(staleMd(t, d), `${t} 提问已过期`); break; }
         await md(d.ok ? `👍 ${t} 已按 ${key}\n\n${actionsFor(t, null)}` : `❌ ${d.out || d.error}`, `${t} 已批准`);
         break;
       }
       case "trust": case "always": {
         if (!t) { await reply("用法：/hd trust <t>"); break; }
-        const d = await bridge(h, "/trust", { t });
+        const { expect } = splitPromptTag(parts);
+        const d = await bridge(h, "/trust", { t, ...(expect ? { expect } : {}) });
+        if (d.stale) { await md(staleMd(t, d), `${t} 提问已过期`); break; }
         await md(d.ok
           ? `🛡 ${t} 已选「${d.option}」（按 ${d.key}）\n\n${actionsFor(t, null)}`
           : `❌ 屏幕上没找到「不再询问 / 始终允许」选项${d.screen ? `\n\n${mdScreen(cleanScreen(d.screen, 8))}` : ""}\n\n${cmdLink("改为批准一次", `/hd ok ${t}`)} · ${cmdLink("读屏", `/hd read ${t}`)}`,
@@ -282,7 +310,9 @@ export async function handleHerdrCommand(params: {
       }
       case "no": case "esc": {
         if (!t) { await reply("用法：/hd no <t>"); break; }
-        const d = await bridge(h, "/keys", { t, keys: ["esc"] });
+        const { expect } = splitPromptTag(parts);
+        const d = await bridge(h, "/keys", { t, keys: ["esc"], ...(expect ? { expect } : {}) });
+        if (d.stale) { await md(staleMd(t, d), `${t} 提问已过期`); break; }
         await md(d.ok ? `↩️ ${t} 已按 Esc\n\n${actionsFor(t, null)}` : `❌ ${d.out || d.error}`, `${t} 已拒绝`);
         break;
       }
@@ -380,7 +410,7 @@ export function startHerdrNotifier(params: { account: ResolvedDingTalkAccount; a
               const screen = r.ok ? cleanScreen(r.text, c.kind === "blocked" ? 14 : 8) : "";
               if (screen) s += `\n\n${mdScreen(screen)}`;
             }
-            if (c.kind !== "exited") s += `\n\n${actionsFor(c.t, state)}`;
+            if (c.kind !== "exited") s += `\n\n${actionsFor(c.t, state, c.prompt)}`;
             blocks.push(s);
           }
           const first = d.changes[0];

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-11-02
+
+### Added
+
+- **Stale-choice guard for `/hd ok|trust|no`** — herdr-bridge numbers every blocked
+  episode (entering blocked, or a different question while still blocked) and returns the
+  number as `prompt` in `/ls` and in `blocked` changes. Pushes and listings now print
+  `/hd ok <t> #42`; with that tag the bridge presses the key only if the agent is still
+  blocked on prompt 42. Otherwise nothing is pressed and the reply shows the current
+  screen and current commands. Before this, an approval copied from an older push could
+  answer a newer question, and `/hd no` (Esc) could interrupt an agent that had resumed.
+  Commands typed without a tag behave as before.
+- The bridge can be imported for tests (`HERDR_BRIDGE_STATE`, starts no server unless run
+  directly); `tests/herdr-bridge.test.mjs` covers prompt numbering and checks.
+
 ## [1.9.1] - 2026-11-02
 
 ### Fixed
