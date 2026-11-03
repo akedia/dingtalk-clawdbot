@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-11-03
+
+### Added
+
+- **`/hd task`: Agent Hub tasks from DingTalk.** `ls`, `new <machine> <context> <goal>`,
+  `show`, `fu` (review follow-up on the same task), `pause|resume|cancel`, `decide`. Task ids
+  resolve from a unique 4+ hex prefix. Writes go through the existing message dedup.
+- herdr-bridge runs each machine's own Agent Hub (`machines.<m>.hub`) through
+  `hc exec --on` with a fixed subcommand set and checked arguments, and drives it: every
+  `hubPollSeconds` it runs `advance` and turns each outbox notice into a `task` change
+  (pushed with the existing cursor) before acknowledging it; a notice already recorded is
+  never pushed twice. Notices render with next-step commands: report in, accepted (merge
+  still manual), validation failed (with failing checks and logs), blocked/failed, decision
+  (copyable choices), executor not ready (read/ok commands).
+
 ## [1.10.2] - 2026-11-03
 
 ### Fixed

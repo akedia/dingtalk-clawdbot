@@ -139,10 +139,29 @@ Access denied. Your staffId: 050914XXXXXXXXX
 | `/hd int <t>` / `/hd kill <t>` | 中断当前回合 / 结束终端 |
 | `/hd new <机器> <项目> [模板] <任务>` | 用模板在已登记项目里起新 agent |
 | `/hd digest` | 今日工作时长、卡住次数、完成轮数 |
+| `/hd task …` | 任务（Agent Hub），见下 |
+
+### 任务：`/hd task`（Agent Hub）
+
+任务在目标机器的 [Agent Hub](https://github.com/akedia/x3analyze/tree/main/qa/agent-hub) 里执行：每个任务有自己的 worktree，由该项目登记的独立验收脚本判定是否完成；评审意见回到原任务、原 worktree 续跑。中继服务每 30 秒推进一次各机器的任务，读取 Hub 的通知并推送（已交报告、验收通过/未通过、worker 卡住、需要决定、执行器没就绪）。验收通过不等于已合入，合入和部署仍需人工确认。
+
+| 命令 | 作用 |
+|---|---|
+| `/hd task` | 帮助 + 各机器已登记的项目 |
+| `/hd task ls [机器]` | 任务列表 |
+| `/hd task new <机器> <项目> <目标…>` | 提交并立即开始（目标可以多行） |
+| `/hd task show <机器>/<id>` | 详情：状态、最近验收、尝试、待决定（id 写前 4 位以上） |
+| `/hd task fu <机器>/<id> <意见…>` | 评审意见，同一任务续跑 |
+| `/hd task pause\|resume\|cancel <机器>/<id>` | 暂停 / 恢复 / 取消 |
+| `/hd task decide <机器>/<决定id> <选项>` | 回答 Hub 提出的决定 |
+
+项目由机器上的操作者用 `hub.py register` 登记（仓库、基线分支、worker 模板、验收脚本），钉钉侧只能选已登记的项目。
 
 回复和推送附带可复制发送的 `/hd` 操作指令。1.9.0 使用的 `dtmd://` 链接已在钉钉 Windows 客户端出现“此链接无法识别”，1.9.1 停止输出这些链接。**当前没有原生可点击操作按钮**；它需要单独接入互动卡片模板和 Stream 卡片回调，并完成客户端实测。只在私聊、只对 `allowFrom`（默认 `dm.allowFrom`）、只在 `herdr.account` 指定的账号生效。需要在 gateway 主机上部署 `bridge/herdr-bridge.mjs`，见 [bridge/README.md](./bridge/README.md)。
 
 ## 📝 更新日志
+
+**v1.11.0** — `/hd task`：从钉钉提交和管理 Agent Hub 任务，进度与验收结果推送
 
 **v1.10.x** — 批准/拒绝带提问编号，过期的选择不再按到新问题或工作中的 agent；不带编号时也不打断工作中的 agent；已结束的终端明确提示「已结束」
 

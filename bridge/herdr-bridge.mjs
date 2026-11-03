@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // herdr-bridge: a narrow, token-guarded HTTP front for one machine's `hc`.
-// The DingTalk plugin calls it; it never exposes `hc exec` or files.
+// The DingTalk plugin calls it; it never exposes files or arbitrary `hc exec` — the only exec is
+// each agent machine's own Agent Hub (machines.<m>.hub) with a fixed set of subcommands.
 //
 //   GET  /health                      ok + machines
 //   GET  /ls                          agents and terminals (live)
@@ -13,6 +14,10 @@
 //   POST /kill      {t}
 //   GET  /changes?after=N             status changes worth a push (durable ids)
 //   GET  /digest                      today's working time / blocks / turns per agent
+//   POST /task/machines|contexts|ls|new|show|followup|control|decide   Agent Hub tasks (below)
+//
+// Agent Hub: every 30 s (hubPollSeconds) the bridge runs `advance` and reads `outbox` on each
+// machine with a hub; each notice becomes a `task` change (same push cursor), then is acked.
 //
 // Every blocked episode gets a prompt id (/ls `prompt`, change `prompt`). A key sent with
 // `expect` is refused unless the agent is still blocked on that same prompt, so a choice made
@@ -46,17 +51,19 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')); } catch { return {}; }
 }
-const st = Object.assign({ nextId: 1, changes: [], last: {}, day: null, prompts: {}, promptSeq: 0, finished: {} }, loadState());
+const st = Object.assign({ nextId: 1, changes: [], last: {}, day: null, prompts: {}, promptSeq: 0, finished: {}, hubSeen: {} }, loadState());
 let saveTimer = null;
+function writeState() {
+  fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
+  const tmp = STATE_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(st));
+  fs.renameSync(tmp, STATE_PATH);
+}
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-    const tmp = STATE_PATH + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(st));
-    fs.renameSync(tmp, STATE_PATH);
-  }, 300);
+  saveTimer = setTimeout(writeState, 300);
 }
+function saveNow() { clearTimeout(saveTimer); writeState(); }
 const today = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // Asia/Shanghai date
 function dayBucket(addr) {
   if (!st.day || st.day.date !== today()) st.day = { date: today(), agents: {} };
@@ -269,8 +276,177 @@ async function opNew(b) {
   return { ok: true, address: res.address, name, cwd, template, sent: first };
 }
 
+// ---------- Agent Hub tasks on the agent machines ----------
+// Each machine keeps its own Hub database, worktrees and validation (qa/agent-hub/hub.py); the
+// bridge only runs that hub.py through `hc exec --on`, with these subcommands and checked args.
+const HUB_CMDS = new Set(['contexts', 'list', 'show', 'submit', 'followup', 'pause', 'resume', 'cancel', 'decide', 'advance', 'outbox', 'ack-notice']);
+const CTX_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/;
+const DECISION_RE = /^d-[0-9a-f]{16}$/;
+const SOURCE_RE = /^[A-Za-z0-9:_.-]{1,80}$/;
+const MAX_HUB_SEEN = 2000;
+const bad = (msg, status = 400) => Object.assign(new Error(msg), { status });
+
+export function hubMachines() {
+  return Object.entries(cfg.machines || {}).filter(([, m]) => m?.hub?.python && m?.hub?.script).map(([n]) => n);
+}
+
+export function hubArgv(machine, args, timeoutS = 120) {
+  const m = (cfg.machines || {})[machine];
+  if (!m?.hub?.python || !m?.hub?.script) throw bad(`no Agent Hub on machine ${machine || '(none)'} (have: ${hubMachines().join(', ') || 'none'})`);
+  if (!HUB_CMDS.has(args[0])) throw bad(`hub command not allowed: ${args[0]}`);
+  const on = machine === cfg.self ? [] : ['--on', machine];
+  return ['exec', ...on, '--json', '--timeout', String(Math.max(1, Math.min(timeoutS, 600))), '--', m.hub.python, m.hub.script, ...args.map(String)];
+}
+
+/** `hc exec --json` output → { ok, data } from the hub's JSON stdout, or { ok:false, error }. */
+export function decodeExec(out) {
+  const d = parse(out);
+  if (!d) return { ok: false, error: 'unreadable hc exec output' };
+  const text = (s) => Buffer.from(s || '', 'base64').toString('utf8');
+  const stdout = text(d.stdout), stderr = text(d.stderr);
+  const data = parse(stdout);
+  if (d.code === 0 && data !== null) return { ok: true, data };
+  const err = parse(stderr);
+  return { ok: false, code: d.code ?? null, timed_out: !!d.timed_out, error: err?.message || (stderr || stdout).trim().slice(-400) || 'hub failed' };
+}
+
+async function hubCall(machine, args, timeoutS = 120) {
+  const r = await hc(hubArgv(machine, args, timeoutS), { timeoutMs: (timeoutS + 60) * 1000 });
+  if (r.code && !r.out) return { ok: false, error: (r.err || 'hc exec failed').trim().slice(-400) };
+  return decodeExec(r.out);
+}
+
+/** A task id from a unique prefix (≥4 hex chars, with or without `t-`) among `list` rows. */
+export function resolveTask(list, given) {
+  const want = String(given || '').toLowerCase().replace(/^t-/, '');
+  if (!/^[0-9a-f]{4,16}$/.test(want)) throw bad('task id: give at least 4 hex characters of t-…');
+  const hits = (list || []).filter((t) => String(t.id).slice(2).startsWith(want));
+  if (hits.length !== 1) throw bad(hits.length ? `task id ${given} is ambiguous: ${hits.slice(0, 5).map((t) => t.id).join(', ')}` : `no task ${given}`);
+  return hits[0].id;
+}
+
+const eventId = () => `dd-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+
+/** What the plugin needs from a Hub `show`, without worktree paths' noise. */
+export function summarizeTask(t) {
+  const last = (t.validations || []).at(-1);
+  const result = last ? parse(last.result) || {} : {};
+  return {
+    id: t.id, context: t.context_id, state: t.state, revision: t.revision, goal: String(t.goal || '').slice(0, 600),
+    branch: t.branch, worktree: t.worktree, acceptance_current: !!t.acceptance_current,
+    attempts: (t.attempts || []).map((a) => ({ number: a.number, address: a.address, state: a.state })),
+    validation: last ? { id: last.id, revision: last.revision, passed: !!last.passed, checks: (result.checks || []).map((c) => ({ name: c.name, exit_code: c.exit_code })) } : null,
+    decisions: (t.decisions || []).filter((d) => d.state === 'pending').map((d) => ({ id: d.id, question: d.question, choices: parse(d.choices) || [] })),
+  };
+}
+
+/** A Hub outbox notice as the extra fields of a `task` change. */
+export function noticeChange(machine, n) {
+  const p = n.payload || {};
+  const cut = (s, k) => (typeof s === 'string' ? s.slice(0, k) : null);
+  return {
+    machine, task: n.task_id, notice: n.kind, notice_id: n.id,
+    summary: cut(p.summary, 600), outcome: p.outcome || null,
+    failed: Array.isArray(p.failed_checks) ? p.failed_checks.map((c) => ({ name: c.name, exit_code: c.exit_code, log: c.log })) : null,
+    checks: Array.isArray(p.checks) ? p.checks.map((c) => ({ name: c.name, exit_code: c.exit_code })) : null,
+    decision: n.kind === 'decision' ? { id: p.id, question: cut(p.question, 300), choices: (p.choices || []).map((c) => cut(c, 200)) } : null,
+    address: p.address || null, hint: cut(p.hint, 400),
+  };
+}
+
+/** Record one notice as a change unless it was already recorded (an ack can fail after the push). */
+export function recordNotice(machine, n) {
+  const key = `${machine}:${n.id}`;
+  if (st.hubSeen[key]) return false;
+  noteChange(`${machine}/${n.task_id}`, 'task', noticeChange(machine, n));
+  st.hubSeen[key] = Date.now();
+  const keys = Object.keys(st.hubSeen);
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_HUB_SEEN))) delete st.hubSeen[k];
+  saveNow();
+  return true;
+}
+
+let hubBusy = false;
+async function hubTick() {
+  if (hubBusy) return; // the previous round is still running
+  hubBusy = true;
+  try {
+    for (const m of hubMachines()) {
+      const adv = await hubCall(m, ['advance'], 300);
+      if (!adv.ok) { log('hub advance', m, adv.error); continue; } // offline: try next round
+      for (const s of adv.data || []) if (s.error) log('hub step', m, s.task_id, s.error);
+      const ob = await hubCall(m, ['outbox']);
+      if (!ob.ok) { log('hub outbox', m, ob.error); continue; }
+      for (const n of ob.data || []) {
+        recordNotice(m, n);
+        const a = await hubCall(m, ['ack-notice', n.id]);
+        if (!a.ok) log('hub ack failed', m, n.id, a.error);
+      }
+    }
+  } catch (e) {
+    log('hub tick error', String(e?.message || e));
+  } finally {
+    hubBusy = false;
+  }
+}
+
+async function taskRoute(p, body) {
+  const machine = String(body.machine || '');
+  if (p === '/task/machines') return { ok: true, machines: hubMachines() };
+  if (p === '/task/contexts') return hubCall(machine, ['contexts']);
+  if (p === '/task/ls') {
+    const out = [];
+    for (const m of machine ? [machine] : hubMachines()) {
+      const r = await hubCall(m, ['list']);
+      out.push({ machine: m, ok: r.ok, error: r.error || null, tasks: r.ok ? r.data.slice(0, 20) : [] });
+    }
+    return { ok: true, machines: out };
+  }
+  const source = SOURCE_RE.test(String(body.source || '')) ? String(body.source) : 'dingtalk';
+  const text = (v, name) => {
+    const s = String(v ?? '').trim();
+    if (!s || s.length > 4000) throw bad(`${name} must be 1..4000 characters`);
+    return s;
+  };
+  const taskId = async () => {
+    const l = await hubCall(machine, ['list']);
+    if (!l.ok) throw bad(l.error, 502);
+    return resolveTask(l.data, body.task);
+  };
+  const andStart = async (r) => {
+    if (!r.ok) return r;
+    const step = await hubCall(machine, ['advance'], 180); // start now, not at the next poll
+    return { ok: true, task: r.data, advance: step.ok ? step.data : { error: step.error } };
+  };
+  if (p === '/task/new') {
+    const ctx = String(body.context || '');
+    if (!CTX_RE.test(ctx)) throw bad('bad context id');
+    return andStart(await hubCall(machine, ['submit', ctx, '--goal', text(body.goal, 'goal'), '--source', source, '--event', eventId()]));
+  }
+  if (p === '/task/show') {
+    const r = await hubCall(machine, ['show', await taskId()]);
+    return r.ok ? { ok: true, task: summarizeTask(r.data) } : r;
+  }
+  if (p === '/task/followup') {
+    const id = await taskId();
+    return andStart(await hubCall(machine, ['followup', id, '--text', text(body.text, 'text'), '--source', source, '--event', eventId()]));
+  }
+  if (p === '/task/control') {
+    const action = String(body.action || '');
+    if (!['pause', 'resume', 'cancel'].includes(action)) throw bad('action must be pause, resume or cancel');
+    return hubCall(machine, [action, await taskId()]);
+  }
+  if (p === '/task/decide') {
+    const decision = String(body.decision || '');
+    if (!DECISION_RE.test(decision)) throw bad('bad decision id');
+    return hubCall(machine, ['decide', decision, '--choice', text(body.choice, 'choice'), '--source', source, '--event', eventId()]);
+  }
+  throw bad('not found', 404);
+}
+
 async function route(req, url, body) {
   const p = url.pathname;
+  if (p.startsWith('/task/')) return taskRoute(p, body);
   if (p === '/health') { const m = await hc(['machine', 'ls']); return { ok: true, machines: parse(m.out)?.machines || m.err }; }
   if (p === '/ls') {
     const r = await hc(['ls']);
@@ -352,5 +528,9 @@ const server = http.createServer(async (req, res) => {
 // started as a service (not when a test imports it for applyStatus / checkPrompt)
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   startEvents();
-  server.listen(PORT, '127.0.0.1', () => log(`herdr-bridge on 127.0.0.1:${PORT}, hc=${HC}, self=${cfg.self}`));
+  server.listen(PORT, '127.0.0.1', () => log(`herdr-bridge on 127.0.0.1:${PORT}, hc=${HC}, self=${cfg.self}, hubs=${hubMachines().join(',') || 'none'}`));
+  if (hubMachines().length) {
+    setTimeout(hubTick, 5000);
+    setInterval(hubTick, Math.max(10, cfg.hubPollSeconds || 30) * 1000);
+  }
 }

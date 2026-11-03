@@ -1566,6 +1566,7 @@ function isHerdrCommand(text) {
 function isHerdrWriteCommand(text) {
   const sub = (text.trim().split(/\s+/)[1] || "").toLowerCase();
   if (sub === "reply" || sub === "r") return text.trim().split(/\s+/).length > 3;
+  if (sub === "task") return TASK_WRITES.has((text.trim().split(/\s+/)[2] || "").toLowerCase());
   return ["send", "s", "ok", "yes", "approve", "trust", "always", "no", "esc", "int", "interrupt", "stop", "kill", "new"].includes(sub);
 }
 function herdrConfig(account) {
@@ -1690,6 +1691,7 @@ var HELP_MD = [
   "- `/hd int <t>` \u4E2D\u65AD\uFF1B`/hd kill <t>` \u7ED3\u675F",
   "- `/hd new <\u673A\u5668> <\u9879\u76EE> [\u6A21\u677F] <\u4EFB\u52A1>` \u8D77\u65B0 agent",
   "- `/hd digest` \u4ECA\u65E5\u6D3B\u52A8\uFF1B`/hd cancel` \u53D6\u6D88\u5F85\u56DE\u590D",
+  "- `/hd task` \u4EFB\u52A1\uFF08Agent Hub\uFF09\uFF1A\u63D0\u4EA4\u3001\u72EC\u7ACB\u9A8C\u6536\u3001\u8BC4\u5BA1\u7EED\u8DD1\uFF0C\u7ED3\u679C\u63A8\u9001",
   "",
   "\u64CD\u4F5C\u65B9\u5F0F\uFF1A\u590D\u5236\u76F8\u5E94\u7684 `/hd ...` \u6307\u4EE4\uFF0C\u53D1\u9001\u7ED9\u672C\u673A\u5668\u4EBA\u3002\u5F53\u524D\u7248\u672C\u4E0D\u63D0\u4F9B\u53EF\u70B9\u51FB\u64CD\u4F5C\u6309\u94AE\u3002",
   "",
@@ -1697,6 +1699,186 @@ var HELP_MD = [
   "",
   [cmdLink("\u5217\u8868", "/hd ls"), cmdLink("\u4ECA\u65E5", "/hd digest")].join(" \xB7 ")
 ].join("\n");
+var TASK_WRITES = /* @__PURE__ */ new Set(["new", "fu", "followup", "pause", "resume", "cancel", "decide"]);
+var TASK_STATE_TEXT = {
+  queued: "\u6392\u961F",
+  dispatching: "\u6D3E\u53D1\u4E2D",
+  working: "\u8FDB\u884C\u4E2D",
+  awaiting_review: "\u5F85\u9A8C\u6536",
+  verifying: "\u9A8C\u6536\u4E2D",
+  accepted: "\u5DF2\u901A\u8FC7",
+  failed: "\u5931\u8D25",
+  blocked: "\u5361\u4F4F",
+  paused: "\u5DF2\u6682\u505C",
+  cancelled: "\u5DF2\u53D6\u6D88",
+  waiting_answer: "\u7B49\u4F60\u5904\u7406",
+  waiting_decision: "\u7B49\u4F60\u51B3\u5B9A"
+};
+var NOTICE_TEXT = {
+  awaiting_review: "\u{1F4DD} \u5DF2\u4EA4\u62A5\u544A\uFF0C\u7B49\u5F85\u72EC\u7ACB\u9A8C\u6536",
+  accepted: "\u2705 \u72EC\u7ACB\u9A8C\u6536\u901A\u8FC7",
+  validation_failed: "\u274C \u72EC\u7ACB\u9A8C\u6536\u672A\u901A\u8FC7",
+  failed: "\u274C worker \u62A5\u544A\u5931\u8D25",
+  blocked: "\u26D4 worker \u5361\u4F4F",
+  decision: "\u2753 \u9700\u8981\u4F60\u51B3\u5B9A",
+  executor_waiting: "\u26A0\uFE0F \u6267\u884C\u5668\u6CA1\u5C31\u7EEA",
+  dispatch_uncertain: "\u26A0\uFE0F \u6D3E\u53D1\u7ED3\u679C\u4E0D\u786E\u5B9A"
+};
+var shortId = (id) => String(id || "").replace(/^t-/, "").slice(0, 8);
+var taskRef = (machine, id) => `${machine}/${shortId(id)}`;
+var TASK_HELP = [
+  "#### \u4EFB\u52A1\uFF08Agent Hub\uFF09",
+  "\u4EFB\u52A1\u5728\u76EE\u6807\u673A\u5668\u7684 Agent Hub \u91CC\u6267\u884C\uFF1A\u72EC\u7ACB worktree\u3001\u72EC\u7ACB\u9A8C\u6536\u811A\u672C\u5224\u5B9A\u5B8C\u6210\uFF0C\u8BC4\u5BA1\u610F\u89C1\u56DE\u5230\u539F\u4EFB\u52A1\u7EED\u8DD1\u3002",
+  "- `/hd task ls [\u673A\u5668]` \u4EFB\u52A1\u5217\u8868",
+  "- `/hd task new <\u673A\u5668> <\u9879\u76EE> <\u76EE\u6807\u2026>` \u63D0\u4EA4\u5E76\u7ACB\u5373\u5F00\u59CB",
+  "- `/hd task show <\u673A\u5668>/<id>` \u8BE6\u60C5\uFF08id \u5199\u524D 4 \u4F4D\u4EE5\u4E0A\u5373\u53EF\uFF09",
+  "- `/hd task fu <\u673A\u5668>/<id> <\u610F\u89C1\u2026>` \u8BC4\u5BA1\u610F\u89C1\uFF0C\u540C\u4E00\u4EFB\u52A1\u7EED\u8DD1",
+  "- `/hd task pause|resume|cancel <\u673A\u5668>/<id>`",
+  "- `/hd task decide <\u673A\u5668>/<\u51B3\u5B9Aid> <\u9009\u9879>`",
+  "",
+  "\u8FDB\u5EA6\uFF08\u5DF2\u4EA4\u62A5\u544A / \u9A8C\u6536\u901A\u8FC7\u6216\u672A\u901A\u8FC7 / \u5361\u4F4F / \u9700\u8981\u51B3\u5B9A\uFF09\u4F1A\u63A8\u9001\u3002\u9A8C\u6536\u901A\u8FC7\u4E0D\u7B49\u4E8E\u5DF2\u5408\u5165\uFF1A\u5408\u5165\u548C\u90E8\u7F72\u4ECD\u9700\u4EBA\u5DE5\u786E\u8BA4\u3002"
+].join("\n");
+function taskNoticeMd(c) {
+  const ref = taskRef(c.machine, c.task);
+  const out = [`#### ${NOTICE_TEXT[c.notice] || c.notice} \xB7 ${c.machine}/${c.task}`];
+  if (c.summary) out.push(mdScreen(cleanScreen(c.summary, 12)));
+  const acts = [];
+  if (c.notice === "accepted") {
+    if (c.checks?.length) out.push(`\u68C0\u67E5\uFF1A${c.checks.map((k) => `${k.name} ${k.exit_code === 0 ? "\u2713" : `\u2717(${k.exit_code})`}`).join(" \xB7 ")}`);
+    out.push("\u5408\u5165\u3001\u90E8\u7F72\u4ECD\u9700\u4EBA\u5DE5\u786E\u8BA4\u3002");
+    acts.push(cmdLink("\u8BE6\u60C5", `/hd task show ${ref}`), cmdLink("\u518D\u63D0\u610F\u89C1", `/hd task fu ${ref} <\u610F\u89C1>`));
+  } else if (c.notice === "validation_failed") {
+    for (const k of c.failed || []) out.push(`- ${k.name} \u9000\u51FA\u7801 ${k.exit_code}${k.log ? `\uFF1A\`${k.log}\`` : ""}`);
+    acts.push(cmdLink("\u8BA9\u5B83\u4FEE", `/hd task fu ${ref} <\u8BF4\u660E>`), cmdLink("\u8BE6\u60C5", `/hd task show ${ref}`));
+  } else if (c.notice === "decision" && c.decision) {
+    out.push(String(c.decision.question || ""));
+    for (const ch of c.decision.choices || []) acts.push(cmdLink(String(ch).slice(0, 40), `/hd task decide ${c.machine}/${c.decision.id} ${ch}`));
+  } else if (c.notice === "executor_waiting") {
+    if (c.hint) out.push(String(c.hint));
+    const t = c.address ? `${c.machine}/${c.address}` : "";
+    if (t) acts.push(cmdLink("\u8BFB\u5C4F", `/hd read ${t}`), cmdLink("\u56DE\u8F66", `/hd ok ${t}`));
+    acts.push(cmdLink("\u8BE6\u60C5", `/hd task show ${ref}`));
+  } else {
+    acts.push(cmdLink("\u8BE6\u60C5", `/hd task show ${ref}`));
+    if (c.notice === "failed" || c.notice === "blocked") acts.push(cmdLink("\u8865\u5145\u8BF4\u660E", `/hd task fu ${ref} <\u8BF4\u660E>`), cmdLink("\u53D6\u6D88", `/hd task cancel ${ref}`));
+  }
+  if (acts.length) out.push(acts.join(" \xB7 "));
+  return out.join("\n\n");
+}
+function splitRef(ref) {
+  const m = String(ref || "").match(/^([A-Za-z0-9._-]+)\/([A-Za-z0-9_-]+)$/);
+  return m ? { machine: m[1], id: m[2] } : null;
+}
+async function handleTask(h, parts, tail, senderId, md, reply) {
+  const action = (parts[2] || "help").toLowerCase();
+  const source = `dingtalk:${senderId}`.replace(/[^A-Za-z0-9:_.-]/g, "").slice(0, 80);
+  const fail = (d) => `\u274C ${String(d?.error || d?.message || JSON.stringify(d)).slice(0, 400)}`;
+  if (action === "help") {
+    const ms = await bridge(h, "/task/machines", {});
+    const lines = [TASK_HELP, ""];
+    for (const m of ms.ok ? ms.machines : []) {
+      const c = await bridge(h, "/task/contexts", { machine: m });
+      lines.push(`**${m}** \u9879\u76EE\uFF1A${c.ok ? (c.data || []).filter((x) => x.enabled).map((x) => `\`${x.id}\``).join(" ") || "\uFF08\u65E0\uFF09" : `\uFF08${String(c.error).slice(0, 80)}\uFF09`}`);
+    }
+    await md(lines.join("\n"), "\u4EFB\u52A1\u5E2E\u52A9");
+    return;
+  }
+  if (action === "ls" || action === "list") {
+    const d = await bridge(h, "/task/ls", parts[3] ? { machine: parts[3] } : {});
+    if (!d.ok) {
+      await reply(fail(d));
+      return;
+    }
+    const out = ["#### \u4EFB\u52A1"];
+    for (const m of d.machines || []) {
+      if (!m.ok) {
+        out.push(`**${m.machine}**\uFF1A${String(m.error).slice(0, 120)}`);
+        continue;
+      }
+      out.push(`**${m.machine}** \xB7 ${m.tasks.length} \u4E2A`);
+      for (const t of m.tasks.slice(0, 10)) {
+        out.push(`- \`${shortId(t.id)}\` ${t.context_id} \xB7 ${TASK_STATE_TEXT[t.state] || t.state} \xB7 ${String(t.goal || "").slice(0, 50)}  
+  ${cmdLink("\u8BE6\u60C5", `/hd task show ${taskRef(m.machine, t.id)}`)}`);
+      }
+    }
+    await md(out.join("\n\n"), "\u4EFB\u52A1\u5217\u8868");
+    return;
+  }
+  if (action === "new") {
+    const machine = parts[3], context = parts[4], goal = tail(5);
+    if (!machine || !context || !goal) {
+      await reply("\u7528\u6CD5\uFF1A/hd task new <\u673A\u5668> <\u9879\u76EE> <\u76EE\u6807\u2026>\n\u9879\u76EE\u5217\u8868\uFF1A/hd task");
+      return;
+    }
+    await reply(`\u23F3 \u6B63\u5728 ${machine} \u63D0\u4EA4\u5230 ${context}\u2026`);
+    const d = await bridge(h, "/task/new", { machine, context, goal, source }, 3e5);
+    if (!d.ok) {
+      await reply(fail(d));
+      return;
+    }
+    const id = d.task?.task_id;
+    const step = (d.advance || []).find?.((s) => s.task_id === id);
+    const state = step?.result?.state || step?.error || "\u5DF2\u6392\u961F";
+    await md(`\u{1F680} \u5DF2\u63D0\u4EA4 **${machine}/${id}**${d.task?.duplicate ? "\uFF08\u91CD\u590D\u63D0\u4EA4\uFF0C\u6CBF\u7528\u539F\u4EFB\u52A1\uFF09" : ""}
+
+\u5F53\u524D\uFF1A${TASK_STATE_TEXT[state] || state}\uFF1B\u8FDB\u5EA6\u4F1A\u63A8\u9001
+
+${[cmdLink("\u8BE6\u60C5", `/hd task show ${taskRef(machine, id)}`), cmdLink("\u6682\u505C", `/hd task pause ${taskRef(machine, id)}`)].join(" \xB7 ")}`, "\u5DF2\u63D0\u4EA4\u4EFB\u52A1");
+    return;
+  }
+  const ref = splitRef(parts[3]);
+  if (!ref) {
+    await md(TASK_HELP, "\u4EFB\u52A1\u5E2E\u52A9");
+    return;
+  }
+  if (action === "show") {
+    const d = await bridge(h, "/task/show", { machine: ref.machine, task: ref.id });
+    if (!d.ok) {
+      await reply(fail(d));
+      return;
+    }
+    const t = d.task;
+    const v = t.validation;
+    const lines = [
+      `#### ${ref.machine}/${t.id} \xB7 ${TASK_STATE_TEXT[t.state] || t.state}`,
+      `\u9879\u76EE ${t.context} \xB7 \u4FEE\u8BA2 ${t.revision} \xB7 \u5206\u652F \`${t.branch}\``,
+      mdScreen(cleanScreen(t.goal, 8)),
+      v ? `\u6700\u8FD1\u9A8C\u6536\uFF08\u4FEE\u8BA2 ${v.revision}\uFF09\uFF1A${v.passed ? "\u901A\u8FC7" : "\u672A\u901A\u8FC7"} \xB7 ${(v.checks || []).map((k) => `${k.name} ${k.exit_code === 0 ? "\u2713" : "\u2717"}`).join(" ")}${t.state === "accepted" && !t.acceptance_current ? "\uFF08\u4E4B\u540E\u6E90\u7801\u53C8\u53D8\u4E86\uFF09" : ""}` : "\u8FD8\u6CA1\u6709\u9A8C\u6536",
+      ...(t.attempts || []).map((a) => `\u5C1D\u8BD5 ${a.number}\uFF1A${a.address ? `\u7EC8\u7AEF ${ref.machine}/${a.address}` : "\u672A\u542F\u52A8"} \xB7 ${a.state}`),
+      ...(t.decisions || []).map((x) => `\u2753 ${x.question}  
+${(x.choices || []).map((ch) => cmdLink(ch.slice(0, 40), `/hd task decide ${ref.machine}/${x.id} ${ch}`)).join(" \xB7 ")}`),
+      [cmdLink("\u63D0\u610F\u89C1", `/hd task fu ${taskRef(ref.machine, t.id)} <\u610F\u89C1>`), cmdLink("\u6682\u505C", `/hd task pause ${taskRef(ref.machine, t.id)}`), cmdLink("\u53D6\u6D88", `/hd task cancel ${taskRef(ref.machine, t.id)}`)].join(" \xB7 ")
+    ];
+    await md(lines.join("\n\n"), `\u4EFB\u52A1 ${shortId(t.id)}`);
+    return;
+  }
+  if (action === "fu" || action === "followup") {
+    const text = tail(4);
+    if (!text) {
+      await reply("\u7528\u6CD5\uFF1A/hd task fu <\u673A\u5668>/<id> <\u610F\u89C1\u2026>");
+      return;
+    }
+    const d = await bridge(h, "/task/followup", { machine: ref.machine, task: ref.id, text, source }, 3e5);
+    await md(d.ok ? `\u{1F4E8} \u610F\u89C1\u5DF2\u8BB0\u5165 ${ref.machine}/${d.task?.task_id}\uFF08\u4FEE\u8BA2 ${d.task?.revision}\uFF09\uFF0C\u540C\u4E00\u4EFB\u52A1\u7EED\u8DD1\uFF1B\u8FDB\u5EA6\u4F1A\u63A8\u9001` : fail(d), "\u5DF2\u63D0\u4EA4\u610F\u89C1");
+    return;
+  }
+  if (action === "pause" || action === "resume" || action === "cancel") {
+    const d = await bridge(h, "/task/control", { machine: ref.machine, task: ref.id, action });
+    await md(d.ok ? `${{ pause: "\u23F8 \u5DF2\u6682\u505C", resume: "\u25B6\uFE0F \u5DF2\u6062\u590D", cancel: "\u23F9 \u5DF2\u53D6\u6D88" }[action]} ${ref.machine}/${ref.id}` : fail(d), "\u4EFB\u52A1\u63A7\u5236");
+    return;
+  }
+  if (action === "decide") {
+    const choice = tail(4);
+    if (!choice) {
+      await reply("\u7528\u6CD5\uFF1A/hd task decide <\u673A\u5668>/<\u51B3\u5B9Aid> <\u9009\u9879>");
+      return;
+    }
+    const d = await bridge(h, "/task/decide", { machine: ref.machine, decision: ref.id, choice, source });
+    await md(d.ok ? `\u2705 \u5DF2\u8BB0\u5F55\u51B3\u5B9A\uFF1A${choice}` : fail(d), "\u5DF2\u51B3\u5B9A");
+    return;
+  }
+  await md(TASK_HELP, "\u4EFB\u52A1\u5E2E\u52A9");
+}
 var pendingReply = /* @__PURE__ */ new Map();
 var pendingKey = (accountId, senderId) => `${accountId}:${senderId}`;
 async function handleHerdrPendingReply(params) {
@@ -1927,6 +2109,10 @@ ${actionsFor(d.address, "working")}` : `\u274C \u542F\u52A8\u5931\u8D25\uFF1A${d
 ${cmdLink("\u5217\u8868", "/hd ls")}`, "\u4ECA\u65E5\u6D3B\u52A8");
         break;
       }
+      case "task":
+      case "tasks":
+        await handleTask(h, parts, tail, String(senderId), md, reply);
+        break;
       default:
         await md(HELP_MD, "herdr \u5E2E\u52A9");
     }
@@ -1981,6 +2167,10 @@ function startHerdrNotifier(params) {
         } else if (d.changes?.length) {
           const blocks = [];
           for (const c of d.changes) {
+            if (c.kind === "task") {
+              blocks.push(taskNoticeMd(c));
+              continue;
+            }
             const state = c.kind === "blocked" ? "blocked" : null;
             let s = `#### ${KIND_TEXT[c.kind] || c.kind} \xB7 ${c.t}
 
@@ -2001,7 +2191,8 @@ ${actionsFor(c.t, state, c.prompt)}`;
             blocks.push(s);
           }
           const first = d.changes[0];
-          const title = `${KIND_TEXT[first.kind] || first.kind} ${first.t}${d.changes.length > 1 ? ` \u7B49 ${d.changes.length} \u6761` : ""}`;
+          const head = first.kind === "task" ? NOTICE_TEXT[first.notice] || first.notice : KIND_TEXT[first.kind] || first.kind;
+          const title = `${head} ${first.t}${d.changes.length > 1 ? ` \u7B49 ${d.changes.length} \u6761` : ""}`;
           const text = blocks.join("\n\n---\n\n").slice(0, 5e3) + `
 
 ${cmdLink("\u5217\u8868", "/hd ls")}`;

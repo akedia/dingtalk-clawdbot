@@ -155,3 +155,52 @@ test('a live agent that exits is still pushed as exited', async () => {
   assert.deepEqual([ch.kind, ch.t, ch.exit_code, ch.reason], ['exited', t, 3, 'exited']);
   assert.equal(bridge.checkPrompt(t, undefined)?.state, 'finished');
 });
+
+test('hub calls only run allowed subcommands of a configured machine', () => {
+  assert.throws(() => bridge.hubArgv('v172', ['list']), /no Agent Hub/); // test config has no machines
+});
+
+test('hc exec output decodes to hub JSON or a readable error', () => {
+  const enc = (s) => Buffer.from(s).toString('base64');
+  assert.deepEqual(bridge.decodeExec(JSON.stringify({ code: 0, stdout: enc('[{"id":"t-1"}]'), stderr: '' })), { ok: true, data: [{ id: 't-1' }] });
+  const err = bridge.decodeExec(JSON.stringify({ code: 2, stdout: '', stderr: enc('{"error":"HubError","message":"unknown task"}') }));
+  assert.deepEqual([err.ok, err.error], [false, 'unknown task']);
+  assert.equal(bridge.decodeExec('not json').ok, false);
+  assert.equal(bridge.decodeExec(JSON.stringify({ code: null, timed_out: true, stdout: '', stderr: '' })).timed_out, true);
+});
+
+test('task ids resolve from a unique prefix only', () => {
+  const list = [{ id: 't-ec29576533f54e29' }, { id: 't-ec30000000000000' }, { id: 't-ab12ab12ab12ab12' }];
+  assert.equal(bridge.resolveTask(list, 'ab12'), 't-ab12ab12ab12ab12');
+  assert.equal(bridge.resolveTask(list, 't-ec29'), 't-ec29576533f54e29');
+  assert.throws(() => bridge.resolveTask(list, 'ec'), /at least 4/);
+  assert.throws(() => bridge.resolveTask(list, 'ec2'), /at least 4/);
+  assert.throws(() => bridge.resolveTask([{ id: 't-ec29aaaaaaaaaaaa' }, { id: 't-ec29bbbbbbbbbbbb' }], 'ec29'), /ambiguous/);
+  assert.throws(() => bridge.resolveTask(list, 'ffff'), /no task/);
+  assert.throws(() => bridge.resolveTask(list, '../x'), /at least 4/);
+});
+
+test('a hub notice becomes one task change even if it is seen again', async () => {
+  const n = { id: 't-ab12ab12ab12ab12:r1:accepted', task_id: 't-ab12ab12ab12ab12', kind: 'accepted', payload: { checks: [{ name: 'tests', exit_code: 0, log: 'x.log' }], passed: true } };
+  const before = (await savedState()).changes.length;
+  assert.equal(bridge.recordNotice('v172', n), true);
+  assert.equal(bridge.recordNotice('v172', n), false); // ack failed, outbox shows it again
+  const s = await savedState();
+  assert.equal(s.changes.length, before + 1);
+  const ch = s.changes.at(-1);
+  assert.deepEqual([ch.kind, ch.t, ch.notice, ch.machine, ch.checks[0].name], ['task', 'v172/t-ab12ab12ab12ab12', 'accepted', 'v172', 'tests']);
+  const d = bridge.noticeChange('dev', { id: 'd-0123456789abcdef', task_id: 't-1', kind: 'decision', payload: { id: 'd-0123456789abcdef', question: 'q', choices: ['a', 'reject'] } });
+  assert.deepEqual(d.decision, { id: 'd-0123456789abcdef', question: 'q', choices: ['a', 'reject'] });
+});
+
+test('a task summary keeps state, last validation and pending decisions', () => {
+  const s = bridge.summarizeTask({
+    id: 't-1', context_id: 'c', state: 'awaiting_review', revision: 2, goal: 'g', branch: 'b', worktree: 'w', acceptance_current: false,
+    attempts: [{ number: 1, address: 't2t', state: 'open', name: 'x' }],
+    validations: [{ id: 'v-1', revision: 2, passed: 0, result: JSON.stringify({ checks: [{ name: 'tests', exit_code: 1, log: 'l' }] }) }],
+    decisions: [{ id: 'd-1', state: 'pending', question: 'q', choices: '["a","reject"]' }, { id: 'd-0', state: 'accepted', question: 'old', choices: '[]' }],
+  });
+  assert.deepEqual(s.validation, { id: 'v-1', revision: 2, passed: false, checks: [{ name: 'tests', exit_code: 1 }] });
+  assert.deepEqual(s.decisions, [{ id: 'd-1', question: 'q', choices: ['a', 'reject'] }]);
+  assert.deepEqual(s.attempts, [{ number: 1, address: 't2t', state: 'open' }]);
+});

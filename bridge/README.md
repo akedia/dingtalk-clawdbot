@@ -73,5 +73,25 @@ as-herdr journalctl --user -u herdr-bridge -f
 curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8377/health
 ```
 
+### Agent Hub tasks (`/hd task`)
+
+Add `hub` to each machine whose Agent Hub should take tasks (absolute paths on that machine;
+the hc core's own `python` may be the Windows Store stub, so name the interpreter):
+
+```json
+"machines": {
+  "v172": { "...": "...", "hub": { "python": "C:/Users/<you>/.pyenv/pyenv-win/versions/3.12.9/python.exe",
+                                    "script": "D:/x3analyze/qa/agent-hub/hub.py" } }
+}
+```
+
+The bridge then runs only that hub.py, through `hc exec --on <machine>`, with a fixed set of
+subcommands (contexts, list, show, submit, followup, pause, resume, cancel, decide, advance,
+outbox, ack-notice) and checked arguments. Every `hubPollSeconds` (default 30) it runs
+`advance` (one safe step per open task: dispatch, harvest a report, or run the independent
+validation once per revision) and turns each outbox notice into a `task` change before
+acknowledging it; a notice already recorded is never pushed twice. Each machine keeps its own
+Hub database, worktrees and validation logs; register contexts there with `hub.py register`.
+
 State (`~herdr/.local/state/herdr-bridge/state.json`) keeps change ids across restarts so the
 plugin's cursor stays valid; the first snapshot after a start never produces pushes.

@@ -42,6 +42,7 @@ export function isHerdrCommand(text: string): boolean {
 export function isHerdrWriteCommand(text: string): boolean {
   const sub = (text.trim().split(/\s+/)[1] || "").toLowerCase();
   if (sub === "reply" || sub === "r") return text.trim().split(/\s+/).length > 3; // reply with text = send
+  if (sub === "task") return TASK_WRITES.has((text.trim().split(/\s+/)[2] || "").toLowerCase());
   return ["send", "s", "ok", "yes", "approve", "trust", "always", "no", "esc", "int", "interrupt", "stop", "kill", "new"].includes(sub);
 }
 
@@ -184,6 +185,7 @@ const HELP_MD = [
   "- `/hd int <t>` 中断；`/hd kill <t>` 结束",
   "- `/hd new <机器> <项目> [模板] <任务>` 起新 agent",
   "- `/hd digest` 今日活动；`/hd cancel` 取消待回复",
+  "- `/hd task` 任务（Agent Hub）：提交、独立验收、评审续跑，结果推送",
   "",
   "操作方式：复制相应的 `/hd ...` 指令，发送给本机器人。当前版本不提供可点击操作按钮。",
   "",
@@ -191,6 +193,151 @@ const HELP_MD = [
   "",
   [cmdLink("列表", "/hd ls"), cmdLink("今日", "/hd digest")].join(" · "),
 ].join("\n");
+
+// ---------- Agent Hub tasks (/hd task ...) ----------
+
+const TASK_WRITES = new Set(["new", "fu", "followup", "pause", "resume", "cancel", "decide"]);
+const TASK_STATE_TEXT: Record<string, string> = {
+  queued: "排队", dispatching: "派发中", working: "进行中", awaiting_review: "待验收", verifying: "验收中",
+  accepted: "已通过", failed: "失败", blocked: "卡住", paused: "已暂停", cancelled: "已取消",
+  waiting_answer: "等你处理", waiting_decision: "等你决定",
+};
+const NOTICE_TEXT: Record<string, string> = {
+  awaiting_review: "📝 已交报告，等待独立验收", accepted: "✅ 独立验收通过", validation_failed: "❌ 独立验收未通过",
+  failed: "❌ worker 报告失败", blocked: "⛔ worker 卡住", decision: "❓ 需要你决定",
+  executor_waiting: "⚠️ 执行器没就绪", dispatch_uncertain: "⚠️ 派发结果不确定",
+};
+const shortId = (id: string) => String(id || "").replace(/^t-/, "").slice(0, 8);
+const taskRef = (machine: string, id: string) => `${machine}/${shortId(id)}`;
+
+const TASK_HELP = [
+  "#### 任务（Agent Hub）",
+  "任务在目标机器的 Agent Hub 里执行：独立 worktree、独立验收脚本判定完成，评审意见回到原任务续跑。",
+  "- `/hd task ls [机器]` 任务列表",
+  "- `/hd task new <机器> <项目> <目标…>` 提交并立即开始",
+  "- `/hd task show <机器>/<id>` 详情（id 写前 4 位以上即可）",
+  "- `/hd task fu <机器>/<id> <意见…>` 评审意见，同一任务续跑",
+  "- `/hd task pause|resume|cancel <机器>/<id>`",
+  "- `/hd task decide <机器>/<决定id> <选项>`",
+  "",
+  "进度（已交报告 / 验收通过或未通过 / 卡住 / 需要决定）会推送。验收通过不等于已合入：合入和部署仍需人工确认。",
+].join("\n");
+
+/** One pushed Hub notice (a `task` change from the bridge) as markdown. */
+export function taskNoticeMd(c: any): string {
+  const ref = taskRef(c.machine, c.task);
+  const out = [`#### ${NOTICE_TEXT[c.notice] || c.notice} · ${c.machine}/${c.task}`];
+  if (c.summary) out.push(mdScreen(cleanScreen(c.summary, 12)));
+  const acts: string[] = [];
+  if (c.notice === "accepted") {
+    if (c.checks?.length) out.push(`检查：${c.checks.map((k: any) => `${k.name} ${k.exit_code === 0 ? "✓" : `✗(${k.exit_code})`}`).join(" · ")}`);
+    out.push("合入、部署仍需人工确认。");
+    acts.push(cmdLink("详情", `/hd task show ${ref}`), cmdLink("再提意见", `/hd task fu ${ref} <意见>`));
+  } else if (c.notice === "validation_failed") {
+    for (const k of c.failed || []) out.push(`- ${k.name} 退出码 ${k.exit_code}${k.log ? `：\`${k.log}\`` : ""}`);
+    acts.push(cmdLink("让它修", `/hd task fu ${ref} <说明>`), cmdLink("详情", `/hd task show ${ref}`));
+  } else if (c.notice === "decision" && c.decision) {
+    out.push(String(c.decision.question || ""));
+    for (const ch of c.decision.choices || []) acts.push(cmdLink(String(ch).slice(0, 40), `/hd task decide ${c.machine}/${c.decision.id} ${ch}`));
+  } else if (c.notice === "executor_waiting") {
+    if (c.hint) out.push(String(c.hint));
+    const t = c.address ? `${c.machine}/${c.address}` : "";
+    if (t) acts.push(cmdLink("读屏", `/hd read ${t}`), cmdLink("回车", `/hd ok ${t}`));
+    acts.push(cmdLink("详情", `/hd task show ${ref}`));
+  } else {
+    acts.push(cmdLink("详情", `/hd task show ${ref}`));
+    if (c.notice === "failed" || c.notice === "blocked") acts.push(cmdLink("补充说明", `/hd task fu ${ref} <说明>`), cmdLink("取消", `/hd task cancel ${ref}`));
+  }
+  if (acts.length) out.push(acts.join(" · "));
+  return out.join("\n\n");
+}
+
+function splitRef(ref: string | undefined): { machine: string; id: string } | null {
+  const m = String(ref || "").match(/^([A-Za-z0-9._-]+)\/([A-Za-z0-9_-]+)$/);
+  return m ? { machine: m[1], id: m[2] } : null;
+}
+
+async function handleTask(h: HerdrConfig, parts: string[], tail: (n: number) => string, senderId: string,
+  md: (s: string, title: string) => Promise<unknown>, reply: HerdrReply): Promise<void> {
+  const action = (parts[2] || "help").toLowerCase();
+  const source = `dingtalk:${senderId}`.replace(/[^A-Za-z0-9:_.-]/g, "").slice(0, 80);
+  const fail = (d: any) => `❌ ${String(d?.error || d?.message || JSON.stringify(d)).slice(0, 400)}`;
+  if (action === "help") {
+    const ms = await bridge(h, "/task/machines", {});
+    const lines = [TASK_HELP, ""];
+    for (const m of ms.ok ? ms.machines : []) {
+      const c = await bridge(h, "/task/contexts", { machine: m });
+      lines.push(`**${m}** 项目：${c.ok ? (c.data || []).filter((x: any) => x.enabled).map((x: any) => `\`${x.id}\``).join(" ") || "（无）" : `（${String(c.error).slice(0, 80)}）`}`);
+    }
+    await md(lines.join("\n"), "任务帮助");
+    return;
+  }
+  if (action === "ls" || action === "list") {
+    const d = await bridge(h, "/task/ls", parts[3] ? { machine: parts[3] } : {});
+    if (!d.ok) { await reply(fail(d)); return; }
+    const out = ["#### 任务"];
+    for (const m of d.machines || []) {
+      if (!m.ok) { out.push(`**${m.machine}**：${String(m.error).slice(0, 120)}`); continue; }
+      out.push(`**${m.machine}** · ${m.tasks.length} 个`);
+      for (const t of m.tasks.slice(0, 10)) {
+        out.push(`- \`${shortId(t.id)}\` ${t.context_id} · ${TASK_STATE_TEXT[t.state] || t.state} · ${String(t.goal || "").slice(0, 50)}  \n  ${cmdLink("详情", `/hd task show ${taskRef(m.machine, t.id)}`)}`);
+      }
+    }
+    await md(out.join("\n\n"), "任务列表");
+    return;
+  }
+  if (action === "new") {
+    const machine = parts[3], context = parts[4], goal = tail(5);
+    if (!machine || !context || !goal) { await reply("用法：/hd task new <机器> <项目> <目标…>\n项目列表：/hd task"); return; }
+    await reply(`⏳ 正在 ${machine} 提交到 ${context}…`);
+    const d = await bridge(h, "/task/new", { machine, context, goal, source }, 300_000);
+    if (!d.ok) { await reply(fail(d)); return; }
+    const id = d.task?.task_id;
+    const step = (d.advance || []).find?.((s: any) => s.task_id === id);
+    const state = step?.result?.state || step?.error || "已排队";
+    await md(`🚀 已提交 **${machine}/${id}**${d.task?.duplicate ? "（重复提交，沿用原任务）" : ""}\n\n当前：${TASK_STATE_TEXT[state] || state}；进度会推送\n\n${[cmdLink("详情", `/hd task show ${taskRef(machine, id)}`), cmdLink("暂停", `/hd task pause ${taskRef(machine, id)}`)].join(" · ")}`, "已提交任务");
+    return;
+  }
+  const ref = splitRef(parts[3]);
+  if (!ref) { await md(TASK_HELP, "任务帮助"); return; }
+  if (action === "show") {
+    const d = await bridge(h, "/task/show", { machine: ref.machine, task: ref.id });
+    if (!d.ok) { await reply(fail(d)); return; }
+    const t = d.task;
+    const v = t.validation;
+    const lines = [
+      `#### ${ref.machine}/${t.id} · ${TASK_STATE_TEXT[t.state] || t.state}`,
+      `项目 ${t.context} · 修订 ${t.revision} · 分支 \`${t.branch}\``,
+      mdScreen(cleanScreen(t.goal, 8)),
+      v ? `最近验收（修订 ${v.revision}）：${v.passed ? "通过" : "未通过"} · ${(v.checks || []).map((k: any) => `${k.name} ${k.exit_code === 0 ? "✓" : "✗"}`).join(" ")}${t.state === "accepted" && !t.acceptance_current ? "（之后源码又变了）" : ""}` : "还没有验收",
+      ...(t.attempts || []).map((a: any) => `尝试 ${a.number}：${a.address ? `终端 ${ref.machine}/${a.address}` : "未启动"} · ${a.state}`),
+      ...(t.decisions || []).map((x: any) => `❓ ${x.question}  \n${(x.choices || []).map((ch: string) => cmdLink(ch.slice(0, 40), `/hd task decide ${ref.machine}/${x.id} ${ch}`)).join(" · ")}`),
+      [cmdLink("提意见", `/hd task fu ${taskRef(ref.machine, t.id)} <意见>`), cmdLink("暂停", `/hd task pause ${taskRef(ref.machine, t.id)}`), cmdLink("取消", `/hd task cancel ${taskRef(ref.machine, t.id)}`)].join(" · "),
+    ];
+    await md(lines.join("\n\n"), `任务 ${shortId(t.id)}`);
+    return;
+  }
+  if (action === "fu" || action === "followup") {
+    const text = tail(4);
+    if (!text) { await reply("用法：/hd task fu <机器>/<id> <意见…>"); return; }
+    const d = await bridge(h, "/task/followup", { machine: ref.machine, task: ref.id, text, source }, 300_000);
+    await md(d.ok ? `📨 意见已记入 ${ref.machine}/${d.task?.task_id}（修订 ${d.task?.revision}），同一任务续跑；进度会推送` : fail(d), "已提交意见");
+    return;
+  }
+  if (action === "pause" || action === "resume" || action === "cancel") {
+    const d = await bridge(h, "/task/control", { machine: ref.machine, task: ref.id, action });
+    await md(d.ok ? `${{ pause: "⏸ 已暂停", resume: "▶️ 已恢复", cancel: "⏹ 已取消" }[action]} ${ref.machine}/${ref.id}` : fail(d), "任务控制");
+    return;
+  }
+  if (action === "decide") {
+    const choice = tail(4);
+    if (!choice) { await reply("用法：/hd task decide <机器>/<决定id> <选项>"); return; }
+    const d = await bridge(h, "/task/decide", { machine: ref.machine, decision: ref.id, choice, source });
+    await md(d.ok ? `✅ 已记录决定：${choice}` : fail(d), "已决定");
+    return;
+  }
+  await md(TASK_HELP, "任务帮助");
+}
 
 // ---------- pending "reply" (next message goes to an agent) ----------
 
@@ -361,6 +508,9 @@ export async function handleHerdrCommand(params: {
           : `📊 ${d.date} 还没有 agent 活动\n\n${cmdLink("列表", "/hd ls")}`, "今日活动");
         break;
       }
+      case "task": case "tasks":
+        await handleTask(h, parts, tail, String(senderId), md, reply);
+        break;
       default:
         await md(HELP_MD, "herdr 帮助");
     }
@@ -413,6 +563,7 @@ export function startHerdrNotifier(params: { account: ResolvedDingTalkAccount; a
         } else if (d.changes?.length) {
           const blocks: string[] = [];
           for (const c of d.changes) {
+            if (c.kind === "task") { blocks.push(taskNoticeMd(c)); continue; }
             const state = c.kind === "blocked" ? "blocked" : null;
             let s = `#### ${KIND_TEXT[c.kind] || c.kind} · ${c.t}\n\n${c.app || ""} · ${c.where || ""}${c.name ? ` · ${c.name}` : ""}`;
             if (c.msg) s += `\n\n${String(c.msg).slice(0, 200)}`;
@@ -425,7 +576,8 @@ export function startHerdrNotifier(params: { account: ResolvedDingTalkAccount; a
             blocks.push(s);
           }
           const first = d.changes[0];
-          const title = `${KIND_TEXT[first.kind] || first.kind} ${first.t}${d.changes.length > 1 ? ` 等 ${d.changes.length} 条` : ""}`;
+          const head = first.kind === "task" ? NOTICE_TEXT[first.notice] || first.notice : KIND_TEXT[first.kind] || first.kind;
+          const title = `${head} ${first.t}${d.changes.length > 1 ? ` 等 ${d.changes.length} 条` : ""}`;
           const text = blocks.join("\n\n---\n\n").slice(0, 5000) + `\n\n${cmdLink("列表", "/hd ls")}`;
           let delivered = true;
           for (const userId of users) {

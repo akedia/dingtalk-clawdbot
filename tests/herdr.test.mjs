@@ -152,3 +152,59 @@ test('a stale approval on an agent with no known state still says so', async () 
   assert.match(text, /#42 已过期，\*\*没有按键\*\*（它现在状态未知）/);
   assert.match(text, /`\/hd read dev\/t4`/);
 }, { '/keys': () => ({ ok: false, stale: true, expected: 42, state: null, prompt: null, screen: '' }) }));
+
+test('task commands reach their bridge routes with the sender as source', async () => withBridge(async ({ calls, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd task new v172 dingtalk-plugin 修复 X\n第二行说明' });
+  await herdr.handleHerdrCommand({ ...params, text: '/hd task show v172/ec29' });
+  await herdr.handleHerdrCommand({ ...params, text: '/hd task fu v172/ec29 再补一个测试' });
+  await herdr.handleHerdrCommand({ ...params, text: '/hd task pause v172/ec29' });
+  await herdr.handleHerdrCommand({ ...params, text: '/hd task decide v172/d-0123456789abcdef 继续' });
+  const by = (p) => calls.filter((c) => c.p === p).map((c) => c.body);
+  assert.deepEqual(by('/task/new'), [{ machine: 'v172', context: 'dingtalk-plugin', goal: '修复 X\n第二行说明', source: 'dingtalk:owner' }]);
+  assert.deepEqual(by('/task/show'), [{ machine: 'v172', task: 'ec29' }]);
+  assert.deepEqual(by('/task/followup'), [{ machine: 'v172', task: 'ec29', text: '再补一个测试', source: 'dingtalk:owner' }]);
+  assert.deepEqual(by('/task/control'), [{ machine: 'v172', task: 'ec29', action: 'pause' }]);
+  assert.deepEqual(by('/task/decide'), [{ machine: 'v172', decision: 'd-0123456789abcdef', choice: '继续', source: 'dingtalk:owner' }]);
+}, {
+  '/task/new': () => ({ ok: true, task: { task_id: 't-ec29576533f54e29', duplicate: false }, advance: [{ task_id: 't-ec29576533f54e29', result: { state: 'working' } }] }),
+  '/task/show': () => ({ ok: true, task: { id: 't-ec29576533f54e29', context: 'dingtalk-plugin', state: 'accepted', revision: 2, branch: 'agent-hub/t-ec29', goal: 'g', acceptance_current: true, attempts: [], validation: { revision: 2, passed: true, checks: [{ name: 'tests', exit_code: 0 }] }, decisions: [] } }),
+  '/task/followup': () => ({ ok: true, task: { task_id: 't-ec29576533f54e29', revision: 3 } }),
+  '/task/control': () => ({ ok: true, data: {} }),
+  '/task/decide': () => ({ ok: true, data: {} }),
+}));
+
+test('task writes are deduplicated, reads are not, and outsiders get nothing', async () => withBridge(async ({ calls, replies, params }) => {
+  for (const t of ['/hd task new v172 x y', '/hd task fu v172/ab12 z', '/hd task cancel v172/ab12', '/hd task decide v172/d-0123456789abcdef a'])
+    assert.equal(herdr.isHerdrWriteCommand(t), true, t);
+  for (const t of ['/hd task', '/hd task ls', '/hd task show v172/ab12']) assert.equal(herdr.isHerdrWriteCommand(t), false, t);
+  await herdr.handleHerdrCommand({ ...params, senderId: 'outsider', text: '/hd task new v172 x y' });
+  assert.equal(calls.length, 0);
+  assert.equal(replies.length, 0);
+}));
+
+test('task list shows short ids, states and show commands', async () => withBridge(async ({ replies, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd task ls' });
+  const text = replies.map((r) => r.text).join('\n');
+  assert.match(text, /`ec295765` dingtalk-plugin · 已通过/);
+  assert.match(text, /`\/hd task show v172\/ec295765`/);
+  assert.match(text, /\*\*dev\*\*：offline/);
+}, { '/task/ls': () => ({ ok: true, machines: [
+  { machine: 'v172', ok: true, tasks: [{ id: 't-ec29576533f54e29', context_id: 'dingtalk-plugin', state: 'accepted', goal: '修复' }] },
+  { machine: 'dev', ok: false, error: 'offline', tasks: [] }] }) }));
+
+test('task notices render what to do next', () => {
+  const accepted = herdr.taskNoticeMd({ kind: 'task', notice: 'accepted', machine: 'v172', task: 't-ec29576533f54e29', checks: [{ name: 'tests', exit_code: 0 }] });
+  assert.match(accepted, /独立验收通过/);
+  assert.match(accepted, /tests ✓/);
+  assert.match(accepted, /合入、部署仍需人工确认/);
+  const failed = herdr.taskNoticeMd({ kind: 'task', notice: 'validation_failed', machine: 'v172', task: 't-ec29576533f54e29', failed: [{ name: 'tests', exit_code: 1, log: 'D:/x/0.log' }] });
+  assert.match(failed, /tests 退出码 1/);
+  assert.match(failed, /`\/hd task fu v172\/ec295765 <说明>`/);
+  const decision = herdr.taskNoticeMd({ kind: 'task', notice: 'decision', machine: 'dev', task: 't-ab12ab12ab12ab12', decision: { id: 'd-0123456789abcdef', question: '继续吗？', choices: ['继续', 'reject'] } });
+  assert.match(decision, /`\/hd task decide dev\/d-0123456789abcdef 继续`/);
+  assert.match(decision, /`\/hd task decide dev\/d-0123456789abcdef reject`/);
+  const waiting = herdr.taskNoticeMd({ kind: 'task', notice: 'executor_waiting', machine: 'v172', task: 't-ab12ab12ab12ab12', address: 't2t', hint: 'may show a dialog' });
+  assert.match(waiting, /`\/hd read v172\/t2t`/);
+  const report = herdr.taskNoticeMd({ kind: 'task', notice: 'awaiting_review', machine: 'v172', task: 't-ab12ab12ab12ab12', summary: '改好了\n第二行' });
+  assert.match(report, /> 改好了/);
+});
