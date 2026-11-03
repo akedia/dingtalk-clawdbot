@@ -133,6 +133,11 @@ function splitPromptTag(parts: string[]): { args: string[]; expect?: number } {
 }
 
 function staleMd(t: string, d: any): string {
+  if (d.state === "finished") {
+    const what = d.expected == null ? "" : `提问 #${d.expected} 已失效，`;
+    const screen = d.screen ? `\n\n${mdScreen(cleanScreen(d.screen, 10))}` : "";
+    return `⏹ ${t} 已结束，${what}**没有按键**（终端里的 agent 已退出，不能再批准、拒绝或回复）${screen}\n\n${cmdLink("看现有终端", "/hd ls")}`;
+  }
   const now = d.state === "blocked"
     ? `它现在在问另一个问题 #${d.prompt}`
     : `它现在${d.state ? `「${STATE_TEXT[d.state] || d.state}」` : "状态未知"}`;

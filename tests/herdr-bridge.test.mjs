@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test, after } from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -66,4 +66,92 @@ test('untagged keys are refused only while the agent works', () => {
   assert.deepEqual([r.stale, r.state, r.expected], [true, 'working', null]);
   bridge.applyStatus(t, { state: 'done' }, true);
   assert.equal(bridge.checkPrompt(t, null), null);
+});
+
+const savedState = async () => {
+  await new Promise((r) => setTimeout(r, 400)); // save() is debounced by 300 ms
+  return JSON.parse(await readFile(process.env.HERDR_BRIDGE_STATE, 'utf8'));
+};
+
+test('a finished terminal refuses keys as finished, tagged or not, until it reports again', async () => {
+  const t = 'dev/t5';
+  bridge.applyStatus(t, blocked('allow edit?'), false);
+  const id = bridge.checkPrompt(t, -1).prompt;
+  bridge.noteFinished(t, { exit_code: 0, reason: 'exited' });
+
+  assert.deepEqual(bridge.checkPrompt(t, id), { ok: false, stale: true, state: 'finished', prompt: null, expected: id, error: 'terminal has finished' });
+  for (const untagged of [undefined, null, '']) {
+    const r = bridge.checkPrompt(t, untagged);
+    assert.deepEqual([r?.stale, r?.state, r?.prompt, r?.expected], [true, 'finished', null, null]);
+  }
+
+  const s = await savedState();
+  assert.ok(t in s.finished, 'finished mark is persisted');
+  assert.equal(s.last[t], undefined);
+  assert.equal(s.prompts[t], undefined);
+
+  bridge.applyStatus(t, { state: 'idle' }, true);
+  assert.equal(bridge.checkPrompt(t, undefined), null, 'a new status clears the finished mark');
+  assert.ok(!((await savedState()).finished[t]));
+});
+
+test('a shell that never reported a status finishes without an exit push but is still marked', async () => {
+  const t = 'dev/t6';
+  const before = (await savedState()).changes.length;
+  bridge.noteFinished(t, { exit_code: 1 });
+  assert.equal(bridge.checkPrompt(t, undefined)?.state, 'finished');
+  assert.equal((await savedState()).changes.length, before);
+});
+
+test('only the newest 500 finished marks are kept', async () => {
+  for (let i = 0; i < 510; i++) bridge.noteFinished(`dev/cap${i}`, { exit_code: 0 });
+  const keys = Object.keys((await savedState()).finished);
+  assert.equal(keys.length, 500);
+  assert.ok(!keys.includes('dev/cap0') && !keys.includes('dev/cap9'));
+  assert.equal(keys.at(-1), 'dev/cap509');
+  assert.equal(bridge.checkPrompt('dev/cap0', undefined), null, 'an evicted mark falls back to the normal rules');
+  assert.equal(bridge.checkPrompt('dev/cap509', undefined)?.state, 'finished');
+});
+
+test('an address named like an Object.prototype key is not treated as finished', () => {
+  assert.equal(bridge.checkPrompt('constructor', undefined), null);
+});
+
+test('a null status (what a finished terminal reports) keeps the finished mark', () => {
+  const t = 'dev/t11';
+  bridge.applyStatus(t, { state: 'working' }, true);
+  bridge.noteFinished(t, { exit_code: 0 });
+  bridge.applyStatus(t, null, true);
+  bridge.applyStatus(t, undefined, true);
+  bridge.applyStatus(t, {}, true);
+  assert.equal(bridge.checkPrompt(t, undefined)?.state, 'finished');
+  bridge.applyStatus(t, { state: 'working' }, true);
+  assert.equal(bridge.checkPrompt(t, undefined)?.state, 'working', 'a real status clears it');
+});
+
+test('a reconnect snapshot keeps finished terminals finished without a new exit push', async () => {
+  const gone = 'dev/t12', seenDead = 'dev/t13', live = 'dev/t14';
+  bridge.applyStatus(gone, { state: 'working' }, true);       // finished while events were down
+  bridge.noteFinished(seenDead, { exit_code: 0 });            // finished event already seen
+  const before = (await savedState()).changes.length;
+  bridge.snapshot([
+    { address: gone, state: 'finished', exit_code: 0, status: null },
+    { address: seenDead, state: 'finished', exit_code: 0, status: null },
+    { address: live, state: 'running', status: { state: 'idle' } },
+  ]);
+  for (const t of [gone, seenDead]) assert.equal(bridge.checkPrompt(t, 7)?.state, 'finished');
+  assert.equal(bridge.checkPrompt(live, undefined), null);
+  const s = await savedState();
+  assert.equal(s.changes.length, before, 'no exited (or any) change from a snapshot');
+  assert.equal(s.last[gone], undefined);
+  assert.ok(gone in s.finished && seenDead in s.finished);
+});
+
+test('a live agent that exits is still pushed as exited', async () => {
+  const t = 'dev/t15';
+  bridge.snapshot([{ address: t, state: 'running', status: { state: 'working' } }]);
+  bridge.noteFinished(t, { exit_code: 3, reason: 'exited' });
+  const ch = (await savedState()).changes.at(-1);
+  assert.deepEqual([ch.kind, ch.t, ch.exit_code, ch.reason], ['exited', t, 3, 'exited']);
+  assert.equal(bridge.checkPrompt(t, undefined)?.state, 'finished');
 });

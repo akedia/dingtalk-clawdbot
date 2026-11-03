@@ -122,3 +122,33 @@ test('new reports a task that was not sent instead of claiming it started', asyn
   assert.match(text, /`\/hd read dev\/t9`/);
   assert.doesNotMatch(text, /🚀/);
 }, { '/new': () => ({ ok: true, address: 'dev/t9', template: 'worker-codex', cwd: 'E:\x3analyze', sent: { sent: false, reason: 'it never reported its status' } }) }));
+
+const finished = (expected) => () => ({ ok: false, stale: true, expected, state: 'finished', prompt: null, screen: 'E:\x3analyze>' });
+const assertFinishedReply = (text) => {
+  assert.match(text, /已结束/);
+  assert.match(text, /\*\*没有按键\*\*/);
+  assert.match(text, /`\/hd ls`/);
+  assert.doesNotMatch(text, /状态未知|正在工作/);
+  assert.doesNotMatch(text, /\/hd (read|reply|ok|no|trust|int|send)\b/);
+};
+
+test('a tagged choice on a finished terminal says it ended and offers only the list', async () => withBridge(async ({ replies, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd ok dev/t4 #42' });
+  await herdr.handleHerdrCommand({ ...params, text: '/hd trust dev/t4 #42' });
+  assert.equal(replies.length, 2);
+  for (const r of replies) { assertFinishedReply(r.text); assert.match(r.text, /#42/); }
+}, { '/keys': finished(42), '/trust': finished(42) }));
+
+test('an untagged choice on a finished terminal is not reported as working', async () => withBridge(async ({ replies, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd no dev/t4' });
+  const text = replies.map(r => r.text).join('\n');
+  assertFinishedReply(text);
+  assert.doesNotMatch(text, /#null|#undefined/);
+}, { '/keys': finished(null) }));
+
+test('a stale approval on an agent with no known state still says so', async () => withBridge(async ({ replies, params }) => {
+  await herdr.handleHerdrCommand({ ...params, text: '/hd ok dev/t4 #42' });
+  const text = replies.map(r => r.text).join('\n');
+  assert.match(text, /#42 已过期，\*\*没有按键\*\*（它现在状态未知）/);
+  assert.match(text, /`\/hd read dev\/t4`/);
+}, { '/keys': () => ({ ok: false, stale: true, expected: 42, state: null, prompt: null, screen: '' }) }));

@@ -38,6 +38,7 @@ const TOKEN = String(cfg.token || '');
 if (TOKEN.length < 24) throw new Error('config.token must be at least 24 chars');
 const NOTIFY_STATES = new Set(cfg.notifyStates || ['blocked', 'error', 'done', 'turn_end', 'exited']);
 const MAX_CHANGES = 500;
+const MAX_FINISHED = 500;
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -45,7 +46,7 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')); } catch { return {}; }
 }
-const st = Object.assign({ nextId: 1, changes: [], last: {}, day: null, prompts: {}, promptSeq: 0 }, loadState());
+const st = Object.assign({ nextId: 1, changes: [], last: {}, day: null, prompts: {}, promptSeq: 0, finished: {} }, loadState());
 let saveTimer = null;
 function save() {
   clearTimeout(saveTimer);
@@ -92,7 +93,36 @@ function noteChange(addr, kind, extra = {}) {
 
 const promptKey = (s) => `${s?.kind || ''}|${s?.msg || ''}`;
 
+// Terminals whose process ended: keys for them are refused as `finished` until the address
+// reports a real status again or is created/restarted. Insertion-ordered, newest MAX_FINISHED kept.
+function clearFinished(addr) {
+  if (!Object.hasOwn(st.finished, addr)) return;
+  delete st.finished[addr];
+  save();
+}
+
+/** Forget the live state and remember the address as finished. `refresh` moves it to the newest end. */
+function markFinished(addr, refresh) {
+  delete st.last[addr]; delete st.prompts[addr];
+  if (refresh || !Object.hasOwn(st.finished, addr)) {
+    delete st.finished[addr];
+    st.finished[addr] = Date.now();
+    const keys = Object.keys(st.finished);
+    for (const k of keys.slice(0, Math.max(0, keys.length - MAX_FINISHED))) delete st.finished[k];
+  }
+  save();
+}
+
+export function noteFinished(addr, data = {}) {
+  const r = terms.get(addr);
+  const wasAgent = r && (r.reported || st.last[addr]?.state);
+  if (r) { r.state = 'finished'; r.exit_code = data.exit_code; }
+  if (wasAgent && NOTIFY_STATES.has('exited')) noteChange(addr, 'exited', { exit_code: data.exit_code, reason: data.reason });
+  markFinished(addr, true);
+}
+
 export function applyStatus(addr, status, silent) {
+  if (status?.state) clearFinished(addr); // a finished terminal reports status null: keep the mark
   const prev = st.last[addr] || { state: null, since: Date.now() };
   const next = status?.state || null;
   // a new question: entering blocked, or still blocked but asking something else
@@ -119,10 +149,15 @@ export function applyStatus(addr, status, silent) {
   save();
 }
 
-function snapshot(list, silent = true) {
+// Full view after a (re)connect or `missed`. Terminals already finished are marked silently:
+// no exited push and no digest counts — the live `finished` event (if we saw it) did that.
+export function snapshot(list, silent = true) {
   terms.clear();
   for (const r of list || []) terms.set(r.address, r);
-  for (const [a, r] of terms) if (r.status !== undefined) applyStatus(a, r.status, silent);
+  for (const [a, r] of terms) {
+    if (r.state === 'finished') markFinished(a, false);
+    else if (r.status !== undefined) applyStatus(a, r.status, silent);
+  }
 }
 
 let evProc = null, backoff = 1000;
@@ -138,19 +173,12 @@ function startEvents() {
     const p = m.params || {}; const addr = addrOf(p); if (!addr) return;
     const d = p.data || {};
     switch (p.type) {
-      case 'created': case 'restarted': terms.set(addr, { ...d, address: addr }); break;
+      case 'created': case 'restarted': terms.set(addr, { ...d, address: addr }); clearFinished(addr); break;
       case 'removed': terms.delete(addr); break;
       case 'status': { const r = terms.get(addr) || { address: addr }; r.status = d.status; terms.set(addr, r); applyStatus(addr, d.status, false); break; }
       case 'labels': { const r = terms.get(addr); if (r) r.labels = d.labels; break; }
       case 'foreground': { const r = terms.get(addr); if (r) r.foreground = d; break; }
-      case 'finished': {
-        const r = terms.get(addr);
-        const wasAgent = r && (r.reported || st.last[addr]?.state);
-        if (r) { r.state = 'finished'; r.exit_code = d.exit_code; }
-        if (wasAgent && NOTIFY_STATES.has('exited')) noteChange(addr, 'exited', { exit_code: d.exit_code, reason: d.reason });
-        delete st.last[addr]; delete st.prompts[addr]; save();
-        break;
-      }
+      case 'finished': noteFinished(addr, d); break;
     }
   });
   evProc.stderr.on('data', (b) => log('events stderr', String(b).trim()));
@@ -181,10 +209,15 @@ export function findTrustOption(screen) {
  * null when the keys may go: still blocked on prompt `expect`, or (untagged) not working.
  * Untagged keys are refused only while the agent works — Esc would interrupt it — and still
  * go to terminals with no status (a startup dialog may be waiting for them).
+ * A finished terminal refuses everything until it reports a status again.
  */
 export function checkPrompt(t, expect) {
+  const untagged = expect === undefined || expect === null || expect === '';
+  if (Object.hasOwn(st.finished, t)) {
+    return { ok: false, stale: true, expected: untagged ? null : expect, state: 'finished', prompt: null, error: 'terminal has finished' };
+  }
   const state = st.last[t]?.state ?? null;
-  if (expect === undefined || expect === null || expect === '') {
+  if (untagged) {
     if (state !== 'working') return null;
     return { ok: false, stale: true, expected: null, state, prompt: null, error: 'agent is working; untagged keys refused' };
   }
