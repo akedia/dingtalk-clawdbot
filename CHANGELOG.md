@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.2] - 2026-11-03
+
+### Fixed
+
+- A choice sent to a finished terminal now says it ended ("已结束") and offers only
+  `/hd ls`, instead of "状态未知" — or, untagged, "正在工作" — with read/reply commands for a
+  terminal that no longer exists. herdr-bridge remembers finished addresses (newest 500,
+  persisted in state.json), refuses keys for them as `finished` until the address reports a
+  real status or is created/restarted again, and re-marks them silently after a reconnect
+  snapshot (`status: null` no longer clears the mark). Exported `noteFinished` and `snapshot`
+  for tests.
+- First change delivered through Agent Hub: written by a Claude worker (task
+  t-ec29576533f54e29, two rounds, the second from review) and accepted by an independent
+  acceptance script both times.
+
 ## [1.10.1] - 2026-11-02
 
 ### Fixed

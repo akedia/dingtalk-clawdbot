@@ -1636,6 +1636,15 @@ function splitPromptTag(parts) {
   return { args: rest.filter((p) => !PROMPT_RE.test(p)), expect: tag ? Number(tag.slice(1)) : void 0 };
 }
 function staleMd(t, d) {
+  if (d.state === "finished") {
+    const what = d.expected == null ? "" : `\u63D0\u95EE #${d.expected} \u5DF2\u5931\u6548\uFF0C`;
+    const screen2 = d.screen ? `
+
+${mdScreen(cleanScreen(d.screen, 10))}` : "";
+    return `\u23F9 ${t} \u5DF2\u7ED3\u675F\uFF0C${what}**\u6CA1\u6709\u6309\u952E**\uFF08\u7EC8\u7AEF\u91CC\u7684 agent \u5DF2\u9000\u51FA\uFF0C\u4E0D\u80FD\u518D\u6279\u51C6\u3001\u62D2\u7EDD\u6216\u56DE\u590D\uFF09${screen2}
+
+${cmdLink("\u770B\u73B0\u6709\u7EC8\u7AEF", "/hd ls")}`;
+  }
   const now = d.state === "blocked" ? `\u5B83\u73B0\u5728\u5728\u95EE\u53E6\u4E00\u4E2A\u95EE\u9898 #${d.prompt}` : `\u5B83\u73B0\u5728${d.state ? `\u300C${STATE_TEXT[d.state] || d.state}\u300D` : "\u72B6\u6001\u672A\u77E5"}`;
   const screen = d.screen ? `
 
