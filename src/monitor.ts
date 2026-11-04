@@ -6,7 +6,7 @@ import { resolveQuotedFile } from "./quoted-file-service.js";
 import * as fs from "fs";
 import * as path from "path";
 import { resolveDingTalkCacheFile } from "./cache-dir.js";
-import { isHerdrCommand, isHerdrWriteCommand, handleHerdrCommand, handleHerdrPendingReply, startHerdrNotifier } from "./herdr.js";
+import { isHerdrCommand, isHerdrWriteCommand, handleHerdrCommand, handleHerdrPendingReply, handleHerdrQuoteReply, herdrQuoteOf, startHerdrNotifier } from "./herdr.js";
 
 // ============================================================================
 // Live runtime config resolution.
@@ -1442,8 +1442,14 @@ async function processInboundMessage(
     const handled = await handleHerdrCommand({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
     if (handled) return;
   } else if (isDm) {
-    // after `/hd reply <t>`, the next plain DM goes to that agent instead of the AI
     if (isContentDuplicate(senderId, rawBody, log)) return;
+    // quoting a herdr push answers that agent; only the sender's own words are forwarded
+    const quote = herdrQuoteOf(msg);
+    if (quote) {
+      const routed = await handleHerdrQuoteReply({ account, senderId, isDm, text: extracted.text || "", quote, log, reply: herdrReply });
+      if (routed) { markContentProcessed(senderId, rawBody); return; }
+    }
+    // after `/hd reply <t>`, the next plain DM goes to that agent instead of the AI
     const consumed = await handleHerdrPendingReply({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
     if (consumed) { markContentProcessed(senderId, rawBody); return; }
   }

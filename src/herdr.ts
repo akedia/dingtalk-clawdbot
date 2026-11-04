@@ -17,6 +17,9 @@ import * as path from "path";
 import type { ResolvedDingTalkAccount } from "./types.js";
 import { sendDMMessageWithKey } from "./api.js";
 import { resolveDingTalkCacheFile } from "./cache-dir.js";
+import { readable, turnSummary } from "./herdr-screen.js";
+
+export { readable, turnSummary, stripChrome } from "./herdr-screen.js";
 
 export interface HerdrConfig {
   enabled?: boolean;
@@ -136,13 +139,13 @@ function splitPromptTag(parts: string[]): { args: string[]; expect?: number } {
 function staleMd(t: string, d: any): string {
   if (d.state === "finished") {
     const what = d.expected == null ? "" : `提问 #${d.expected} 已失效，`;
-    const screen = d.screen ? `\n\n${mdScreen(cleanScreen(d.screen, 10))}` : "";
+    const screen = d.screen ? `\n\n${mdScreen(readable(d.screen, 10).join("\n"))}` : "";
     return `⏹ ${t} 已结束，${what}**没有按键**（终端里的 agent 已退出，不能再批准、拒绝或回复）${screen}\n\n${cmdLink("看现有终端", "/hd ls")}`;
   }
   const now = d.state === "blocked"
     ? `它现在在问另一个问题 #${d.prompt}`
     : `它现在${d.state ? `「${STATE_TEXT[d.state] || d.state}」` : "状态未知"}`;
-  const screen = d.screen ? `\n\n${mdScreen(cleanScreen(d.screen, 10))}` : "";
+  const screen = d.screen ? `\n\n${mdScreen(readable(d.screen, 10).join("\n"))}` : "";
   const head = d.expected == null
     ? `⚠️ ${t} 正在工作，**没有按键**（不带编号的批准/拒绝不会打断工作中的 agent；要打断用 \`/hd int ${t}\`）`
     : `⚠️ ${t} 的提问 #${d.expected} 已过期，**没有按键**（${now}）`;
@@ -187,7 +190,9 @@ const HELP_MD = [
   "- `/hd digest` 今日活动；`/hd cancel` 取消待回复",
   "- `/hd task` 任务（Agent Hub）：提交、独立验收、评审续跑，结果推送",
   "",
-  "操作方式：复制相应的 `/hd ...` 指令，发送给本机器人。当前版本不提供可点击操作按钮。",
+  "**最省事：长按推送 → 引用 → 打字发送**，内容直接发给那个 agent；等批准的推送引用回 1 批准 / 2 始终允许 / 3 拒绝。任务推送引用回复 = 评审意见续跑。",
+  "",
+  "其余操作：复制相应的 `/hd ...` 指令发送给本机器人。",
   "",
   "机器 dev（默认 Codex）· v172（默认 Claude）；项目 x3analyze / grfal / skills；模板 worker / advisor / verifier，加 -codex 用 Codex",
   "",
@@ -410,7 +415,7 @@ export async function handleHerdrCommand(params: {
         const n = Math.min(Math.max(parseInt(parts[3] || "30", 10) || 30, 1), 120);
         const d = await bridge(h, "/read", { t, lines: n, history: n > 40 });
         if (!d.ok) { await reply(`❌ ${d.text || d.error}`); break; }
-        await reply(`📟 ${t}\n${cleanScreen(d.text, n) || "（空屏）"}`);
+        await reply(`📟 ${t}\n${readable(d.text, n).join("\n") || "（空屏）"}`);
         const row = (await bridge(h, "/ls")).terminals?.find((x: any) => x.t === t);
         const st = row?.status ?? null;
         await md(`${t} ${st ? STATE_TEXT[st] || st : ""}\n\n${actionsFor(t, st, row?.prompt)} · ${cmdLink("更多", `/hd read ${t} 80`)}`, `${t} 操作`);
@@ -427,7 +432,7 @@ export async function handleHerdrCommand(params: {
         const d = await bridge(h, "/read", { t });
         if (!d.ok) { await reply(`❌ ${d.text || d.error}`); break; }
         pendingReply.set(pk, { t, until: Date.now() + REPLY_WINDOW_MS });
-        await reply(`📟 ${t}\n${cleanScreen(d.text, 20) || "（空屏）"}`);
+        await reply(`📟 ${t}\n${readable(d.text, 20).join("\n") || "（空屏）"}`);
         await md(`✍️ 接下来你发的**一条**消息会转给 **${t}**（5 分钟内有效）\n\n${cmdLink("取消", "/hd cancel")}`, `回复 ${t}`);
         break;
       }
@@ -459,7 +464,7 @@ export async function handleHerdrCommand(params: {
         if (d.stale) { await md(staleMd(t, d), `${t} 提问已过期`); break; }
         await md(d.ok
           ? `🛡 ${t} 已选「${d.option}」（按 ${d.key}）\n\n${actionsFor(t, null)}`
-          : `❌ 屏幕上没找到「不再询问 / 始终允许」选项${d.screen ? `\n\n${mdScreen(cleanScreen(d.screen, 8))}` : ""}\n\n${cmdLink("改为批准一次", `/hd ok ${t}`)} · ${cmdLink("读屏", `/hd read ${t}`)}`,
+          : `❌ 屏幕上没找到「不再询问 / 始终允许」选项${d.screen ? `\n\n${mdScreen(readable(d.screen, 8).join("\n"))}` : ""}\n\n${cmdLink("改为批准一次", `/hd ok ${t}`)} · ${cmdLink("读屏", `/hd read ${t}`)}`,
           `${t} 始终允许`);
         break;
       }
@@ -521,6 +526,178 @@ export async function handleHerdrCommand(params: {
   return true;
 }
 
+// ---------- pushes you can answer by quoting ----------
+
+/** What a pushed message is about, so a quote-reply to it can be routed. */
+interface PushTarget {
+  t?: string;              // terminal address (agent pushes)
+  kind: string;            // change kind, or "task"
+  prompt?: number | null;  // blocked: the prompt id the approval answers
+  task?: { ref: string; notice: string; decision?: string };
+}
+interface PushRecord extends PushTarget { key?: string; at: number }
+interface Notice { text: string; title: string; target?: PushTarget }
+
+const PUSH_SPLIT_MAX = 6;
+const PUSH_KEEP_MS = 3 * 24 * 3600_000;
+const PUSH_KEEP_N = 300;
+const pushLog = new Map<string, PushRecord[]>();
+
+function pushFile(accountId: string): string {
+  return resolveDingTalkCacheFile(`herdr-pushes-${accountId}.json`);
+}
+function pushesOf(accountId: string): PushRecord[] {
+  let list = pushLog.get(accountId);
+  if (!list) {
+    try { list = JSON.parse(fs.readFileSync(pushFile(accountId), "utf8")); } catch { list = []; }
+    pushLog.set(accountId, list!);
+  }
+  return list!;
+}
+export function recordPush(accountId: string, rec: PushRecord): void {
+  const cutoff = Date.now() - PUSH_KEEP_MS;
+  const list = pushesOf(accountId).filter((r) => r.at > cutoff);
+  list.push(rec);
+  const kept = list.slice(-PUSH_KEEP_N);
+  pushLog.set(accountId, kept);
+  try {
+    const f = pushFile(accountId);
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f + ".tmp", JSON.stringify(kept));
+    fs.renameSync(f + ".tmp", f);
+  } catch { /* routing falls back to the quoted text */ }
+}
+
+export interface HerdrQuote { key?: string; msgId?: string; createdAt?: number; text?: string }
+
+/** The quoted message of an inbound DingTalk message, in whichever shape this client sent it. */
+export function herdrQuoteOf(msg: any): HerdrQuote | null {
+  const r = msg?.text?.repliedMsg || msg?.quoteMsg || msg?.content?.quote || msg?.content?.referenceMessage;
+  const key = msg?.originalProcessQueryKey;
+  const msgId = msg?.originalMsgId || r?.msgId;
+  if (!r && !key && !msgId) return null;
+  const c = r?.content;
+  const text = typeof c === "string" ? c
+    : c?.text || c?.title
+    || (Array.isArray(c?.richText) ? c.richText.map((x: any) => x?.text || "").join("") : "")
+    || (typeof r?.text === "string" ? r.text : r?.text?.content) || "";
+  return { key, msgId, createdAt: Number(r?.createdAt || r?.createAt) || undefined, text: String(text) };
+}
+
+/** The header of an agent push ("✅ 本轮完成 · v172/t3c"), not just any text naming a terminal. */
+const ADDR_RE = /(?:需要你处理|出错|完成|已退出) · ([A-Za-z0-9._-]+\/t[0-9a-z]+)\b/;
+
+/** Which push a quote points at: by message key, then send time, then the address in its text. */
+export function findQuotedPush(accountId: string, q: HerdrQuote): PushTarget | null {
+  const list = pushesOf(accountId);
+  if (q.key) {
+    const hit = list.find((r) => r.key && r.key === q.key);
+    if (hit) return hit;
+  }
+  // a quote that carries a key not ours is some other bot message (e.g. the AI's reply)
+  if (q.createdAt && !q.key) {
+    const near = list.map((r) => ({ r, d: Math.abs(r.at - q.createdAt!) }))
+      .filter((x) => x.d <= 15_000).sort((a, b) => a.d - b.d);
+    const same = (a: PushRecord, b: PushRecord) => a.t === b.t && a.task?.ref === b.task?.ref;
+    if (near.length && (near.length === 1 || near[1].d - near[0].d > 2_000 || same(near[0].r, near[1].r))) return near[0].r;
+  }
+  const m = String(q.text || "").match(ADDR_RE);
+  if (m) {
+    const last = [...list].reverse().find((r) => r.t === m[1]);
+    return last || { t: m[1], kind: "turn_end" };
+  }
+  return null;
+}
+
+const OK_RE = /^(1|ok|y|yes|好|好的|批准|同意|可以|行|是)$/i;
+const TRUST_RE = /^(2|always|trust|始终|总是|始终允许|一直允许)$/i;
+const NO_RE = /^(3|no|n|不|不行|否|拒绝|取消)$/i;
+
+/**
+ * A DM that quotes one of our pushes: answer that agent (or Hub task) with the message.
+ * On a blocked push, 1/2/3 (or ok/始终/拒绝) choose; other text is sent once the agent is no
+ * longer waiting on that prompt. Returns true when the message was ours to handle.
+ */
+export async function handleHerdrQuoteReply(params: {
+  account: ResolvedDingTalkAccount; senderId: string; isDm: boolean; text: string; quote: HerdrQuote; reply: HerdrReply; log?: any;
+}): Promise<boolean> {
+  const { account, senderId, isDm, quote, reply, log } = params;
+  if (!isDm) return false;
+  const h = herdrConfig(account);
+  if (!h || !allowList(account, h).includes(String(senderId))) return false;
+  const target = findQuotedPush(account.accountId, quote);
+  if (!target) return false;
+  const body = String(params.text || "").replace(/^\[引用[^\]\n]*\]\s*/, "").trim();
+  if (!body) return false;
+  const run =(cmd: string) => handleHerdrCommand({ ...params, text: cmd });
+  log?.info?.(`[dingtalk][herdr] quote-reply → ${target.t || target.task?.ref} (${target.kind})`);
+
+  if (target.task) {
+    const { ref, notice, decision } = target.task;
+    if (notice === "decision" && decision) return run(`/hd task decide ${decision} ${body}`);
+    return run(`/hd task fu ${ref} ${body}`);
+  }
+  const t = target.t!;
+  if (target.kind === "blocked") {
+    const tag = target.prompt ? ` #${target.prompt}` : "";
+    if (OK_RE.test(body)) return run(`/hd ok ${t}${tag}`);
+    if (TRUST_RE.test(body)) return run(`/hd trust ${t}${tag}`);
+    if (NO_RE.test(body)) return run(`/hd no ${t}${tag}`);
+    const row = (await bridge(h, "/ls")).terminals?.find((x: any) => x.t === t);
+    if (row?.status === "blocked") {
+      await reply(`✋ ${t} 还在等你批准，这句没发出去。\n\n引用那条推送回 **1** 批准 · **2** 始终允许 · **3** 拒绝；拒绝后再引用回复想让它改做什么。`, { markdown: true, title: `${t} 在等批准` });
+      return true;
+    }
+  }
+  return run(`/hd send ${t} ${body}`);
+}
+
+/** One change from the bridge as a push message. */
+export async function changeNotice(h: HerdrConfig, c: any): Promise<Notice> {
+  if (c.kind === "task") {
+    const ref = taskRef(c.machine, c.task);
+    const decision = c.notice === "decision" && c.decision ? `${c.machine}/${c.decision.id}` : undefined;
+    const quotable = decision || ["accepted", "validation_failed", "failed", "blocked", "awaiting_review"].includes(c.notice);
+    return {
+      text: taskNoticeMd(c) + (quotable ? `\n\n↩ 引用本条回复 = ${decision ? "选这个决定" : "评审意见，同一任务续跑"}` : ""),
+      title: `${NOTICE_TEXT[c.notice] || c.notice} ${ref}`,
+      target: quotable ? { kind: "task", task: { ref, notice: c.notice, decision } } : undefined,
+    };
+  }
+  const t = c.t;
+  const where = [c.where, c.name].filter(Boolean).join(" · ");
+  const head = `#### ${KIND_TEXT[c.kind] || c.kind} · ${t}${where ? `\n\n${where}` : ""}`;
+  const parts = [head];
+  if (c.msg) parts.push(String(c.msg).slice(0, 200));
+  let title = `${KIND_TEXT[c.kind] || c.kind} ${t}`;
+  if (c.kind === "blocked" || c.kind === "turn_end" || c.kind === "done") {
+    const r = await bridge(h, "/read", { t }, 25_000);
+    if (r.ok && c.kind === "blocked") {
+      parts.push(mdScreen(readable(r.text, 14).join("\n")));
+    } else if (r.ok) {
+      const s = turnSummary(r.text);
+      if (s.ask) parts.push(`你：${mdInline(s.ask)}`);
+      parts.push(mdScreen(s.lines.join("\n")));
+      if (s.title) title = `✅ ${t.split("/").pop()}：${s.title}`;
+    }
+  }
+  if (c.kind === "blocked") {
+    const tag = c.prompt ? ` #${c.prompt}` : "";
+    parts.push(`↩ **引用本条回 1** 批准 · **2** 始终允许 · **3** 拒绝\n\n备用 \`/hd ok ${t}${tag}\` · 读屏 \`/hd read ${t}\``);
+  } else if (c.kind !== "exited") {
+    parts.push(`↩ **引用本条回复 = 直接发给它** · 读屏 \`/hd read ${t}\``);
+  }
+  return {
+    text: parts.join("\n\n").slice(0, 5000),
+    title,
+    target: c.kind === "exited" ? undefined : { t, kind: c.kind, prompt: c.prompt ?? null },
+  };
+}
+
+function mdInline(s: string): string {
+  return mdScreen(s).replace(/^> /, "");
+}
+
 // ---------- push notifications ----------
 
 function cursorFile(accountId: string): string {
@@ -561,28 +738,22 @@ export function startHerdrNotifier(params: { account: ResolvedDingTalkAccount; a
           after = d.last ?? 0; // first start: don't replay history
           writeCursor(account.accountId, after!);
         } else if (d.changes?.length) {
-          const blocks: string[] = [];
-          for (const c of d.changes) {
-            if (c.kind === "task") { blocks.push(taskNoticeMd(c)); continue; }
-            const state = c.kind === "blocked" ? "blocked" : null;
-            let s = `#### ${KIND_TEXT[c.kind] || c.kind} · ${c.t}\n\n${c.app || ""} · ${c.where || ""}${c.name ? ` · ${c.name}` : ""}`;
-            if (c.msg) s += `\n\n${String(c.msg).slice(0, 200)}`;
-            if (c.kind === "blocked" || c.kind === "turn_end" || c.kind === "done") {
-              const r = await bridge(h, "/read", { t: c.t }, 25_000);
-              const screen = r.ok ? cleanScreen(r.text, c.kind === "blocked" ? 14 : 8) : "";
-              if (screen) s += `\n\n${mdScreen(screen)}`;
-            }
-            if (c.kind !== "exited") s += `\n\n${actionsFor(c.t, state, c.prompt)}`;
-            blocks.push(s);
-          }
+          // one message per change, so each can be quoted to answer that agent; a burst is folded
+          const notices: Notice[] = [];
+          for (const c of d.changes) notices.push(await changeNotice(h, c));
+          const msgs = notices.length <= PUSH_SPLIT_MAX ? notices : [
+            ...notices.slice(0, PUSH_SPLIT_MAX - 1),
+            { text: notices.slice(PUSH_SPLIT_MAX - 1).map((n) => n.text).join("\n\n---\n\n").slice(0, 5000),
+              title: `另有 ${notices.length - PUSH_SPLIT_MAX + 1} 条 herdr 通知` },
+          ];
           const first = d.changes[0];
-          const head = first.kind === "task" ? NOTICE_TEXT[first.notice] || first.notice : KIND_TEXT[first.kind] || first.kind;
-          const title = `${head} ${first.t}${d.changes.length > 1 ? ` 等 ${d.changes.length} 条` : ""}`;
-          const text = blocks.join("\n\n---\n\n").slice(0, 5000) + `\n\n${cmdLink("列表", "/hd ls")}`;
           let delivered = true;
-          for (const userId of users) {
-            const r = await sendDMMessageWithKey({ clientId: account.clientId!, clientSecret: account.clientSecret!, robotCode, userId, text, format: "markdown", title });
-            if (!r.ok) { delivered = false; log?.warn?.(`[dingtalk][herdr] push to ${userId} failed: ${r.error}`); }
+          for (const n of msgs) {
+            for (const userId of users) {
+              const r = await sendDMMessageWithKey({ clientId: account.clientId!, clientSecret: account.clientSecret!, robotCode, userId, text: n.text, format: "markdown", title: n.title });
+              if (!r.ok) { delivered = false; log?.warn?.(`[dingtalk][herdr] push to ${userId} failed: ${r.error}`); continue; }
+              if (n.target) recordPush(account.accountId, { ...n.target, key: r.processQueryKey, at: Date.now() });
+            }
           }
           // advance even on partial failure after a retry window, so one bad user can't wedge the queue
           if (delivered || (Date.now() - (first.at || 0)) > 10 * 60_000) {

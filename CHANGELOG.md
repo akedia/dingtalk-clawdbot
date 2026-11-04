@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-11-04
+
+### Changed
+
+- **herdr pushes read like messages, not terminal dumps.** A finished turn shows only what the
+  agent said in that turn (plus "你：<what you asked>"), with terminal wraps joined so the phone
+  wraps it; separator rules, the input box and its grey prompt suggestion, the status bar,
+  "Update installed" banners, timing lines, recaps and tool calls/output are gone. The push
+  title (the line DingTalk shows in the chat list) is the agent's first sentence. `/hd read`
+  and stale-prompt screens use the same chrome stripping (a numbered permission menu is kept).
+- One push per change instead of one combined message (a burst over 6 is folded), so each push
+  can be quoted.
+
+### Added
+
+- **Quote a push to answer it.** Quoting an agent push and typing sends the text to that agent;
+  on a "需要你处理" push, `1`/`2`/`3` (or ok/始终/拒绝) approve, always-allow or refuse that
+  prompt by its id, and other text is held back while the agent is still waiting on the menu.
+  Quoting a Hub task push sends review follow-up (or picks a decision). The quoted push is found
+  by its processQueryKey, else by send time (only when the quote has no key), else by the push
+  header in the quoted text; quotes of anything else go to the AI as before. Push records live in
+  `herdr-pushes-<account>.json` in the cache dir (3 days, newest 300).
+
 ## [1.11.0] - 2026-11-03
 
 ### Added

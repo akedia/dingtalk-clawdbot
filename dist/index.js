@@ -1557,6 +1557,125 @@ import * as path6 from "path";
 init_api();
 import * as fs4 from "fs";
 import * as path5 from "path";
+
+// src/herdr-screen.ts
+var BOX_RE = /[─━═╌╍┄┅┈┉│┃║╭╮╰╯┌┐└┘├┤┬┴┼▔▁\-=]/g;
+var STATUS_RE = /auto mode|shift\+tab|to manage|for shortcuts|context left|% left|esc to (interrupt|cancel)|bypass permissions|accept edits|plan mode on|⏎ send|newline|ctrl\+[a-z]|update installed|restart to update|\bshells? still running|^\s*[⏵▸►]{2}/i;
+var PROMPT_RE = /^\s*[❯›>](\s|$)/;
+var MENU_RE = /^\s*[❯›>]\s*\d+\./;
+var TIMING_RE = /^[✻✶✳✢✽✺*·]\s.*\bfor \d+(\.\d+)?(ms|s|m|h)\b/;
+var TOOL_HEAD_RE = /^[●•⏺]\s+(?:Background command\b|[A-Z][\w-]*(?:\s[\w-]+)?\(|(?:Ran|Explored|Edited|Read|Called|Updated|Added|Deleted|Searched|Waited|Listed|Wrote|Viewed|Fetched)\b)/;
+var COLLAPSED_RE = /^\s{1,4}(?:Ran|Searched|Read|Wrote|Edited|Listed|Updated|Created|Fetched|Explored|Called)\b.*\b(?:command|pattern|file|files|director(?:y|ies)|tool|tools|url)s?\b/i;
+var BRANCH_RE = /^\s*[⎿└├│]/;
+var BULLET_RE = /^[●•⏺]\s+/;
+function displayWidth(s) {
+  let w = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    w += c >= 4352 && c <= 4447 || c >= 11904 && c <= 42191 || c >= 44032 && c <= 55203 || c >= 63744 && c <= 64255 || c >= 65072 && c <= 65103 || c >= 65280 && c <= 65376 || c >= 65504 && c <= 65510 || c >= 127744 && c <= 129791 ? 2 : 1;
+  }
+  return w;
+}
+function isRule(line) {
+  const t = line.trim();
+  if (t.length < 12) return false;
+  const box = (t.match(BOX_RE) || []).length;
+  return box / t.length >= 0.6;
+}
+var isStatus = (l) => STATUS_RE.test(l);
+function stripChrome(text) {
+  const lines = String(text || "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "").split("\n").map((l) => l.replace(/\s+$/, ""));
+  let i = lines.length - 1;
+  while (i >= 0 && (!lines[i].trim() || isStatus(lines[i]) || isRule(lines[i]))) i--;
+  if (i >= 0 && PROMPT_RE.test(lines[i]) && !MENU_RE.test(lines[i])) {
+    let j = i - 1;
+    while (j >= 0 && isRule(lines[j])) j--;
+    lines.length = j + 1;
+  }
+  return lines.filter((l) => !isRule(l) && !/update installed|restart to update/i.test(l)).map((l) => l.replace(/\s*\(disable recaps in \/config\)/, "").replace(/^\s{8,}/, "  "));
+}
+function unwrap(lines, width) {
+  const out = [];
+  for (const l of lines) {
+    const prev = out[out.length - 1];
+    const cont = l.match(/^( {2,4})(\S.*)$/);
+    const item = prev?.match(/^(\s*)(?:[-*•]|\d+[.)])\s/);
+    const hanging = !!(item && cont && cont[1].length === item[1].length + 2);
+    if (prev && cont && (hanging || displayWidth(prev) >= width - 16) && !/^([-*•]|\d+[.)])\s/.test(cont[2]) && !BRANCH_RE.test(l)) {
+      const glue = /[⺀-￿]$/.test(prev) || /^[⺀-￿]/.test(cont[2]) ? "" : " ";
+      out[out.length - 1] = prev + glue + cont[2];
+    } else out.push(l);
+  }
+  return out;
+}
+function screenWidth(text) {
+  let w = 0;
+  for (const l of String(text || "").split("\n")) {
+    const d = displayWidth(l.replace(/\s+$/, ""));
+    if (isRule(l)) return d;
+    if (d > w) w = d;
+  }
+  return w || 80;
+}
+function readable(text, max) {
+  const lines = unwrap(stripChrome(text), screenWidth(text)).filter((l, i, a) => l.trim() || (a[i - 1] ?? "").trim());
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  while (lines.length && !lines[0].trim()) lines.shift();
+  return lines.slice(-max);
+}
+function turnSummary(text, maxLines = 12, maxChars = 1200) {
+  const lines = unwrap(stripChrome(text), screenWidth(text));
+  let start = 0, ask = "";
+  for (let k = lines.length - 1; k >= 0; k--) {
+    if (/^[❯›>]\s+\S/.test(lines[k]) && !MENU_RE.test(lines[k])) {
+      start = k + 1;
+      ask = lines[k].replace(/^[❯›>]\s+/, "").trim();
+      break;
+    }
+  }
+  let seg = lines.slice(start);
+  const timing = seg.map((l, k) => TIMING_RE.test(l) ? k : -1).filter((k) => k >= 0);
+  if (timing.length) {
+    const lastT = timing[timing.length - 1];
+    const after = seg.slice(lastT + 1).some((l) => BULLET_RE.test(l) && !TOOL_HEAD_RE.test(l));
+    if (!after) seg = seg.slice(timing.length > 1 ? timing[timing.length - 2] + 1 : 0, lastT);
+    else seg = seg.slice(lastT + 1);
+  }
+  const prose = [];
+  let skip = false;
+  for (const l of seg) {
+    if (!l.trim()) {
+      skip = false;
+      continue;
+    }
+    if (skip) continue;
+    if (TOOL_HEAD_RE.test(l) || /^※\s/.test(l)) {
+      skip = true;
+      continue;
+    }
+    if (TIMING_RE.test(l) || COLLAPSED_RE.test(l) || BRANCH_RE.test(l) || isStatus(l)) continue;
+    if (BULLET_RE.test(l)) {
+      prose.push([l.replace(BULLET_RE, "")]);
+      continue;
+    }
+    if (prose.length) prose[prose.length - 1].push(l.replace(/^ {2}/, ""));
+  }
+  let out = [];
+  for (let b = prose.length - 1; b >= 0; b--) {
+    const next = [...prose[b], ...out];
+    if (out.length && (next.length > maxLines || next.join("\n").length > maxChars)) break;
+    out = next;
+  }
+  if (out.length > maxLines) out = out.slice(0, maxLines).concat("\u2026");
+  let joined = out.join("\n");
+  if (joined.length > maxChars) out = (joined.slice(0, maxChars) + "\u2026").split("\n");
+  const last = prose[prose.length - 1]?.join(" ") || "";
+  const title = (last.match(/^.{1,60}?[。！？!?]/)?.[0] || (last.length > 50 ? last.slice(0, 50) + "\u2026" : last)).trim();
+  if (!out.length) out = readable(text, 8);
+  return { ask: ask.slice(0, 80), lines: out, title };
+}
+
+// src/herdr.ts
 var CMD_RE = /^\/hd(\s|$)/i;
 var SCREEN_MAX = 3e3;
 var REPLY_WINDOW_MS = 5 * 6e4;
@@ -1630,18 +1749,18 @@ function actionsFor(t, state, prompt) {
   if (state === "working") a.push(cmdLink("\u4E2D\u65AD", `/hd int ${t}`));
   return a.join(" \xB7 ");
 }
-var PROMPT_RE = /^#(\d+)$/;
+var PROMPT_RE2 = /^#(\d+)$/;
 function splitPromptTag(parts) {
   const rest = parts.slice(3);
-  const tag = rest.find((p) => PROMPT_RE.test(p));
-  return { args: rest.filter((p) => !PROMPT_RE.test(p)), expect: tag ? Number(tag.slice(1)) : void 0 };
+  const tag = rest.find((p) => PROMPT_RE2.test(p));
+  return { args: rest.filter((p) => !PROMPT_RE2.test(p)), expect: tag ? Number(tag.slice(1)) : void 0 };
 }
 function staleMd(t, d) {
   if (d.state === "finished") {
     const what = d.expected == null ? "" : `\u63D0\u95EE #${d.expected} \u5DF2\u5931\u6548\uFF0C`;
     const screen2 = d.screen ? `
 
-${mdScreen(cleanScreen(d.screen, 10))}` : "";
+${mdScreen(readable(d.screen, 10).join("\n"))}` : "";
     return `\u23F9 ${t} \u5DF2\u7ED3\u675F\uFF0C${what}**\u6CA1\u6709\u6309\u952E**\uFF08\u7EC8\u7AEF\u91CC\u7684 agent \u5DF2\u9000\u51FA\uFF0C\u4E0D\u80FD\u518D\u6279\u51C6\u3001\u62D2\u7EDD\u6216\u56DE\u590D\uFF09${screen2}
 
 ${cmdLink("\u770B\u73B0\u6709\u7EC8\u7AEF", "/hd ls")}`;
@@ -1649,7 +1768,7 @@ ${cmdLink("\u770B\u73B0\u6709\u7EC8\u7AEF", "/hd ls")}`;
   const now = d.state === "blocked" ? `\u5B83\u73B0\u5728\u5728\u95EE\u53E6\u4E00\u4E2A\u95EE\u9898 #${d.prompt}` : `\u5B83\u73B0\u5728${d.state ? `\u300C${STATE_TEXT[d.state] || d.state}\u300D` : "\u72B6\u6001\u672A\u77E5"}`;
   const screen = d.screen ? `
 
-${mdScreen(cleanScreen(d.screen, 10))}` : "";
+${mdScreen(readable(d.screen, 10).join("\n"))}` : "";
   const head = d.expected == null ? `\u26A0\uFE0F ${t} \u6B63\u5728\u5DE5\u4F5C\uFF0C**\u6CA1\u6709\u6309\u952E**\uFF08\u4E0D\u5E26\u7F16\u53F7\u7684\u6279\u51C6/\u62D2\u7EDD\u4E0D\u4F1A\u6253\u65AD\u5DE5\u4F5C\u4E2D\u7684 agent\uFF1B\u8981\u6253\u65AD\u7528 \`/hd int ${t}\`\uFF09` : `\u26A0\uFE0F ${t} \u7684\u63D0\u95EE #${d.expected} \u5DF2\u8FC7\u671F\uFF0C**\u6CA1\u6709\u6309\u952E**\uFF08${now}\uFF09`;
   return `${head}${screen}
 
@@ -1693,7 +1812,9 @@ var HELP_MD = [
   "- `/hd digest` \u4ECA\u65E5\u6D3B\u52A8\uFF1B`/hd cancel` \u53D6\u6D88\u5F85\u56DE\u590D",
   "- `/hd task` \u4EFB\u52A1\uFF08Agent Hub\uFF09\uFF1A\u63D0\u4EA4\u3001\u72EC\u7ACB\u9A8C\u6536\u3001\u8BC4\u5BA1\u7EED\u8DD1\uFF0C\u7ED3\u679C\u63A8\u9001",
   "",
-  "\u64CD\u4F5C\u65B9\u5F0F\uFF1A\u590D\u5236\u76F8\u5E94\u7684 `/hd ...` \u6307\u4EE4\uFF0C\u53D1\u9001\u7ED9\u672C\u673A\u5668\u4EBA\u3002\u5F53\u524D\u7248\u672C\u4E0D\u63D0\u4F9B\u53EF\u70B9\u51FB\u64CD\u4F5C\u6309\u94AE\u3002",
+  "**\u6700\u7701\u4E8B\uFF1A\u957F\u6309\u63A8\u9001 \u2192 \u5F15\u7528 \u2192 \u6253\u5B57\u53D1\u9001**\uFF0C\u5185\u5BB9\u76F4\u63A5\u53D1\u7ED9\u90A3\u4E2A agent\uFF1B\u7B49\u6279\u51C6\u7684\u63A8\u9001\u5F15\u7528\u56DE 1 \u6279\u51C6 / 2 \u59CB\u7EC8\u5141\u8BB8 / 3 \u62D2\u7EDD\u3002\u4EFB\u52A1\u63A8\u9001\u5F15\u7528\u56DE\u590D = \u8BC4\u5BA1\u610F\u89C1\u7EED\u8DD1\u3002",
+  "",
+  "\u5176\u4F59\u64CD\u4F5C\uFF1A\u590D\u5236\u76F8\u5E94\u7684 `/hd ...` \u6307\u4EE4\u53D1\u9001\u7ED9\u672C\u673A\u5668\u4EBA\u3002",
   "",
   "\u673A\u5668 dev\uFF08\u9ED8\u8BA4 Codex\uFF09\xB7 v172\uFF08\u9ED8\u8BA4 Claude\uFF09\uFF1B\u9879\u76EE x3analyze / grfal / skills\uFF1B\u6A21\u677F worker / advisor / verifier\uFF0C\u52A0 -codex \u7528 Codex",
   "",
@@ -1938,7 +2059,7 @@ async function handleHerdrCommand(params) {
           break;
         }
         await reply(`\u{1F4DF} ${t}
-${cleanScreen(d.text, n) || "\uFF08\u7A7A\u5C4F\uFF09"}`);
+${readable(d.text, n).join("\n") || "\uFF08\u7A7A\u5C4F\uFF09"}`);
         const row = (await bridge(h, "/ls")).terminals?.find((x) => x.t === t);
         const st = row?.status ?? null;
         await md(`${t} ${st ? STATE_TEXT[st] || st : ""}
@@ -1967,7 +2088,7 @@ ${actionsFor(t, null)}` : `\u274C ${JSON.stringify(d2.out || d2.error).slice(0, 
         }
         pendingReply.set(pk, { t, until: Date.now() + REPLY_WINDOW_MS });
         await reply(`\u{1F4DF} ${t}
-${cleanScreen(d.text, 20) || "\uFF08\u7A7A\u5C4F\uFF09"}`);
+${readable(d.text, 20).join("\n") || "\uFF08\u7A7A\u5C4F\uFF09"}`);
         await md(`\u270D\uFE0F \u63A5\u4E0B\u6765\u4F60\u53D1\u7684**\u4E00\u6761**\u6D88\u606F\u4F1A\u8F6C\u7ED9 **${t}**\uFF085 \u5206\u949F\u5185\u6709\u6548\uFF09
 
 ${cmdLink("\u53D6\u6D88", "/hd cancel")}`, `\u56DE\u590D ${t}`);
@@ -2027,7 +2148,7 @@ ${actionsFor(t, null)}` : `\u274C ${d.out || d.error}`, `${t} \u5DF2\u6279\u51C6
 
 ${actionsFor(t, null)}` : `\u274C \u5C4F\u5E55\u4E0A\u6CA1\u627E\u5230\u300C\u4E0D\u518D\u8BE2\u95EE / \u59CB\u7EC8\u5141\u8BB8\u300D\u9009\u9879${d.screen ? `
 
-${mdScreen(cleanScreen(d.screen, 8))}` : ""}
+${mdScreen(readable(d.screen, 8).join("\n"))}` : ""}
 
 ${cmdLink("\u6539\u4E3A\u6279\u51C6\u4E00\u6B21", `/hd ok ${t}`)} \xB7 ${cmdLink("\u8BFB\u5C4F", `/hd read ${t}`)}`,
           `${t} \u59CB\u7EC8\u5141\u8BB8`
@@ -2122,6 +2243,151 @@ ${cmdLink("\u5217\u8868", "/hd ls")}`, "\u4ECA\u65E5\u6D3B\u52A8");
   log?.info?.(`[dingtalk][herdr] ${sub} ${t || ""}`);
   return true;
 }
+var PUSH_SPLIT_MAX = 6;
+var PUSH_KEEP_MS = 3 * 24 * 36e5;
+var PUSH_KEEP_N = 300;
+var pushLog = /* @__PURE__ */ new Map();
+function pushFile(accountId) {
+  return resolveDingTalkCacheFile(`herdr-pushes-${accountId}.json`);
+}
+function pushesOf(accountId) {
+  let list = pushLog.get(accountId);
+  if (!list) {
+    try {
+      list = JSON.parse(fs4.readFileSync(pushFile(accountId), "utf8"));
+    } catch {
+      list = [];
+    }
+    pushLog.set(accountId, list);
+  }
+  return list;
+}
+function recordPush(accountId, rec) {
+  const cutoff = Date.now() - PUSH_KEEP_MS;
+  const list = pushesOf(accountId).filter((r) => r.at > cutoff);
+  list.push(rec);
+  const kept = list.slice(-PUSH_KEEP_N);
+  pushLog.set(accountId, kept);
+  try {
+    const f = pushFile(accountId);
+    fs4.mkdirSync(path5.dirname(f), { recursive: true });
+    fs4.writeFileSync(f + ".tmp", JSON.stringify(kept));
+    fs4.renameSync(f + ".tmp", f);
+  } catch {
+  }
+}
+function herdrQuoteOf(msg) {
+  const r = msg?.text?.repliedMsg || msg?.quoteMsg || msg?.content?.quote || msg?.content?.referenceMessage;
+  const key = msg?.originalProcessQueryKey;
+  const msgId = msg?.originalMsgId || r?.msgId;
+  if (!r && !key && !msgId) return null;
+  const c = r?.content;
+  const text = typeof c === "string" ? c : c?.text || c?.title || (Array.isArray(c?.richText) ? c.richText.map((x) => x?.text || "").join("") : "") || (typeof r?.text === "string" ? r.text : r?.text?.content) || "";
+  return { key, msgId, createdAt: Number(r?.createdAt || r?.createAt) || void 0, text: String(text) };
+}
+var ADDR_RE = /(?:需要你处理|出错|完成|已退出) · ([A-Za-z0-9._-]+\/t[0-9a-z]+)\b/;
+function findQuotedPush(accountId, q) {
+  const list = pushesOf(accountId);
+  if (q.key) {
+    const hit = list.find((r) => r.key && r.key === q.key);
+    if (hit) return hit;
+  }
+  if (q.createdAt && !q.key) {
+    const near = list.map((r) => ({ r, d: Math.abs(r.at - q.createdAt) })).filter((x) => x.d <= 15e3).sort((a, b) => a.d - b.d);
+    const same = (a, b) => a.t === b.t && a.task?.ref === b.task?.ref;
+    if (near.length && (near.length === 1 || near[1].d - near[0].d > 2e3 || same(near[0].r, near[1].r))) return near[0].r;
+  }
+  const m = String(q.text || "").match(ADDR_RE);
+  if (m) {
+    const last = [...list].reverse().find((r) => r.t === m[1]);
+    return last || { t: m[1], kind: "turn_end" };
+  }
+  return null;
+}
+var OK_RE = /^(1|ok|y|yes|好|好的|批准|同意|可以|行|是)$/i;
+var TRUST_RE = /^(2|always|trust|始终|总是|始终允许|一直允许)$/i;
+var NO_RE = /^(3|no|n|不|不行|否|拒绝|取消)$/i;
+async function handleHerdrQuoteReply(params) {
+  const { account, senderId, isDm, quote, reply, log } = params;
+  if (!isDm) return false;
+  const h = herdrConfig(account);
+  if (!h || !allowList(account, h).includes(String(senderId))) return false;
+  const target = findQuotedPush(account.accountId, quote);
+  if (!target) return false;
+  const body = String(params.text || "").replace(/^\[引用[^\]\n]*\]\s*/, "").trim();
+  if (!body) return false;
+  const run = (cmd) => handleHerdrCommand({ ...params, text: cmd });
+  log?.info?.(`[dingtalk][herdr] quote-reply \u2192 ${target.t || target.task?.ref} (${target.kind})`);
+  if (target.task) {
+    const { ref, notice, decision } = target.task;
+    if (notice === "decision" && decision) return run(`/hd task decide ${decision} ${body}`);
+    return run(`/hd task fu ${ref} ${body}`);
+  }
+  const t = target.t;
+  if (target.kind === "blocked") {
+    const tag = target.prompt ? ` #${target.prompt}` : "";
+    if (OK_RE.test(body)) return run(`/hd ok ${t}${tag}`);
+    if (TRUST_RE.test(body)) return run(`/hd trust ${t}${tag}`);
+    if (NO_RE.test(body)) return run(`/hd no ${t}${tag}`);
+    const row = (await bridge(h, "/ls")).terminals?.find((x) => x.t === t);
+    if (row?.status === "blocked") {
+      await reply(`\u270B ${t} \u8FD8\u5728\u7B49\u4F60\u6279\u51C6\uFF0C\u8FD9\u53E5\u6CA1\u53D1\u51FA\u53BB\u3002
+
+\u5F15\u7528\u90A3\u6761\u63A8\u9001\u56DE **1** \u6279\u51C6 \xB7 **2** \u59CB\u7EC8\u5141\u8BB8 \xB7 **3** \u62D2\u7EDD\uFF1B\u62D2\u7EDD\u540E\u518D\u5F15\u7528\u56DE\u590D\u60F3\u8BA9\u5B83\u6539\u505A\u4EC0\u4E48\u3002`, { markdown: true, title: `${t} \u5728\u7B49\u6279\u51C6` });
+      return true;
+    }
+  }
+  return run(`/hd send ${t} ${body}`);
+}
+async function changeNotice(h, c) {
+  if (c.kind === "task") {
+    const ref = taskRef(c.machine, c.task);
+    const decision = c.notice === "decision" && c.decision ? `${c.machine}/${c.decision.id}` : void 0;
+    const quotable = decision || ["accepted", "validation_failed", "failed", "blocked", "awaiting_review"].includes(c.notice);
+    return {
+      text: taskNoticeMd(c) + (quotable ? `
+
+\u21A9 \u5F15\u7528\u672C\u6761\u56DE\u590D = ${decision ? "\u9009\u8FD9\u4E2A\u51B3\u5B9A" : "\u8BC4\u5BA1\u610F\u89C1\uFF0C\u540C\u4E00\u4EFB\u52A1\u7EED\u8DD1"}` : ""),
+      title: `${NOTICE_TEXT[c.notice] || c.notice} ${ref}`,
+      target: quotable ? { kind: "task", task: { ref, notice: c.notice, decision } } : void 0
+    };
+  }
+  const t = c.t;
+  const where = [c.where, c.name].filter(Boolean).join(" \xB7 ");
+  const head = `#### ${KIND_TEXT[c.kind] || c.kind} \xB7 ${t}${where ? `
+
+${where}` : ""}`;
+  const parts = [head];
+  if (c.msg) parts.push(String(c.msg).slice(0, 200));
+  let title = `${KIND_TEXT[c.kind] || c.kind} ${t}`;
+  if (c.kind === "blocked" || c.kind === "turn_end" || c.kind === "done") {
+    const r = await bridge(h, "/read", { t }, 25e3);
+    if (r.ok && c.kind === "blocked") {
+      parts.push(mdScreen(readable(r.text, 14).join("\n")));
+    } else if (r.ok) {
+      const s = turnSummary(r.text);
+      if (s.ask) parts.push(`\u4F60\uFF1A${mdInline(s.ask)}`);
+      parts.push(mdScreen(s.lines.join("\n")));
+      if (s.title) title = `\u2705 ${t.split("/").pop()}\uFF1A${s.title}`;
+    }
+  }
+  if (c.kind === "blocked") {
+    const tag = c.prompt ? ` #${c.prompt}` : "";
+    parts.push(`\u21A9 **\u5F15\u7528\u672C\u6761\u56DE 1** \u6279\u51C6 \xB7 **2** \u59CB\u7EC8\u5141\u8BB8 \xB7 **3** \u62D2\u7EDD
+
+\u5907\u7528 \`/hd ok ${t}${tag}\` \xB7 \u8BFB\u5C4F \`/hd read ${t}\``);
+  } else if (c.kind !== "exited") {
+    parts.push(`\u21A9 **\u5F15\u7528\u672C\u6761\u56DE\u590D = \u76F4\u63A5\u53D1\u7ED9\u5B83** \xB7 \u8BFB\u5C4F \`/hd read ${t}\``);
+  }
+  return {
+    text: parts.join("\n\n").slice(0, 5e3),
+    title,
+    target: c.kind === "exited" ? void 0 : { t, kind: c.kind, prompt: c.prompt ?? null }
+  };
+}
+function mdInline(s) {
+  return mdScreen(s).replace(/^> /, "");
+}
 function cursorFile(accountId) {
   return resolveDingTalkCacheFile(`herdr-cursor-${accountId}.json`);
 }
@@ -2165,43 +2431,26 @@ function startHerdrNotifier(params) {
           after = d.last ?? 0;
           writeCursor(account.accountId, after);
         } else if (d.changes?.length) {
-          const blocks = [];
-          for (const c of d.changes) {
-            if (c.kind === "task") {
-              blocks.push(taskNoticeMd(c));
-              continue;
+          const notices = [];
+          for (const c of d.changes) notices.push(await changeNotice(h, c));
+          const msgs = notices.length <= PUSH_SPLIT_MAX ? notices : [
+            ...notices.slice(0, PUSH_SPLIT_MAX - 1),
+            {
+              text: notices.slice(PUSH_SPLIT_MAX - 1).map((n) => n.text).join("\n\n---\n\n").slice(0, 5e3),
+              title: `\u53E6\u6709 ${notices.length - PUSH_SPLIT_MAX + 1} \u6761 herdr \u901A\u77E5`
             }
-            const state = c.kind === "blocked" ? "blocked" : null;
-            let s = `#### ${KIND_TEXT[c.kind] || c.kind} \xB7 ${c.t}
-
-${c.app || ""} \xB7 ${c.where || ""}${c.name ? ` \xB7 ${c.name}` : ""}`;
-            if (c.msg) s += `
-
-${String(c.msg).slice(0, 200)}`;
-            if (c.kind === "blocked" || c.kind === "turn_end" || c.kind === "done") {
-              const r = await bridge(h, "/read", { t: c.t }, 25e3);
-              const screen = r.ok ? cleanScreen(r.text, c.kind === "blocked" ? 14 : 8) : "";
-              if (screen) s += `
-
-${mdScreen(screen)}`;
-            }
-            if (c.kind !== "exited") s += `
-
-${actionsFor(c.t, state, c.prompt)}`;
-            blocks.push(s);
-          }
+          ];
           const first = d.changes[0];
-          const head = first.kind === "task" ? NOTICE_TEXT[first.notice] || first.notice : KIND_TEXT[first.kind] || first.kind;
-          const title = `${head} ${first.t}${d.changes.length > 1 ? ` \u7B49 ${d.changes.length} \u6761` : ""}`;
-          const text = blocks.join("\n\n---\n\n").slice(0, 5e3) + `
-
-${cmdLink("\u5217\u8868", "/hd ls")}`;
           let delivered = true;
-          for (const userId of users) {
-            const r = await sendDMMessageWithKey({ clientId: account.clientId, clientSecret: account.clientSecret, robotCode, userId, text, format: "markdown", title });
-            if (!r.ok) {
-              delivered = false;
-              log?.warn?.(`[dingtalk][herdr] push to ${userId} failed: ${r.error}`);
+          for (const n of msgs) {
+            for (const userId of users) {
+              const r = await sendDMMessageWithKey({ clientId: account.clientId, clientSecret: account.clientSecret, robotCode, userId, text: n.text, format: "markdown", title: n.title });
+              if (!r.ok) {
+                delivered = false;
+                log?.warn?.(`[dingtalk][herdr] push to ${userId} failed: ${r.error}`);
+                continue;
+              }
+              if (n.target) recordPush(account.accountId, { ...n.target, key: r.processQueryKey, at: Date.now() });
             }
           }
           if (delivered || Date.now() - (first.at || 0) > 10 * 6e4) {
@@ -3273,6 +3522,14 @@ ${rawBody}`;
     if (handled) return;
   } else if (isDm) {
     if (isContentDuplicate(senderId, rawBody, log)) return;
+    const quote = herdrQuoteOf(msg);
+    if (quote) {
+      const routed = await handleHerdrQuoteReply({ account, senderId, isDm, text: extracted.text || "", quote, log, reply: herdrReply });
+      if (routed) {
+        markContentProcessed(senderId, rawBody);
+        return;
+      }
+    }
     const consumed = await handleHerdrPendingReply({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
     if (consumed) {
       markContentProcessed(senderId, rawBody);
