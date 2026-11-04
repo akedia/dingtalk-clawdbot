@@ -175,6 +175,30 @@ test('a quote on a blocked push answers its prompt and never types into the menu
   assert.deepEqual(r.calls.find((c) => c.p === '/send').body, { t: 'dev/t5', text: '换个做法' });
 });
 
+test('"看"/"停" and /hd commands in a quote are for the bot, not typed into the agent', async () => {
+  let r = await quoteReply('read', { key: 'pqk-1' });
+  assert.ok(!r.calls.some((c) => c.p === '/send'));
+  assert.deepEqual(r.calls.find((c) => c.p === '/read').body, { t: 'v172/t3c', lines: 60, history: true });
+  r = await quoteReply('看', { key: 'pqk-2' }); // also on a blocked push
+  assert.equal(r.calls.find((c) => c.p === '/read').body.t, 'dev/t5');
+  r = await quoteReply('停', { key: 'pqk-1' });
+  assert.deepEqual(r.calls.find((c) => c.p === '/interrupt').body, { t: 'v172/t3c' });
+  r = await quoteReply('/hd ls', { key: 'pqk-1' });
+  assert.ok(r.calls.some((c) => c.p === '/ls') && !r.calls.some((c) => c.p === '/send'));
+  r = await quoteReply('/compact', { key: 'pqk-1' }); // the agent's own slash commands still go to it
+  assert.deepEqual(r.calls.find((c) => c.p === '/send').body, { t: 'v172/t3c', text: '/compact' });
+  r = await quoteReply('看一下日志再说', { key: 'pqk-1' });
+  assert.equal(r.calls.find((c) => c.p === '/send').body.text, '看一下日志再说');
+});
+
+test('a long turn says how much was left out', () => {
+  const many = Array.from({ length: 8 }, (_, i) => `● 第${i}段\n  ${'内容'.repeat(10)}\n  ${'更多'.repeat(10)}\n`).join('\n');
+  const s = herdr.turnSummary(`❯ 写报告\n\n${many}\n✻ Cooked for 2h 1m · done 13:46\n`);
+  assert.ok(s.more > 0);
+  assert.equal(s.lines[0], `第${s.more}段`);
+  assert.equal(herdr.turnSummary(CODEX_DONE).more, 0);
+});
+
 test('quotes that are not ours, or from outsiders, are left alone', async () => {
   let r = await quoteReply('随便聊聊', { key: 'someone-else', text: '今天天气不错' });
   assert.equal(r.routed, false);

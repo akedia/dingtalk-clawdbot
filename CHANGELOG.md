@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.1] - 2026-11-04
+
+### Fixed
+
+- **Quoting a push with "看"/"read" or "停" no longer types the word into the agent.** These short
+  words read the screen (60 lines with history) or interrupt; `/hd …` typed in a quote runs as a
+  command. Anything else, including the agent's own slash commands such as `/compact`, is still sent.
+- A finished-turn push that had to cut a long reply now says how many earlier paragraphs it left out.
+- Pushes list the new words in their footer instead of the `/hd read` command.
+
 ## [1.12.0] - 2026-11-04
 
 ### Changed

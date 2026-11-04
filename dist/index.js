@@ -1661,18 +1661,21 @@ function turnSummary(text, maxLines = 12, maxChars = 1200) {
     if (prose.length) prose[prose.length - 1].push(l.replace(/^ {2}/, ""));
   }
   let out = [];
+  let used = 0;
   for (let b = prose.length - 1; b >= 0; b--) {
     const next = [...prose[b], ...out];
     if (out.length && (next.length > maxLines || next.join("\n").length > maxChars)) break;
     out = next;
+    used++;
   }
+  const more = prose.length - used;
   if (out.length > maxLines) out = out.slice(0, maxLines).concat("\u2026");
   let joined = out.join("\n");
   if (joined.length > maxChars) out = (joined.slice(0, maxChars) + "\u2026").split("\n");
   const last = prose[prose.length - 1]?.join(" ") || "";
   const title = (last.match(/^.{1,60}?[。！？!?]/)?.[0] || (last.length > 50 ? last.slice(0, 50) + "\u2026" : last)).trim();
   if (!out.length) out = readable(text, 8);
-  return { ask: ask.slice(0, 80), lines: out, title };
+  return { ask: ask.slice(0, 80), lines: out, title, more };
 }
 
 // src/herdr.ts
@@ -1812,7 +1815,7 @@ var HELP_MD = [
   "- `/hd digest` \u4ECA\u65E5\u6D3B\u52A8\uFF1B`/hd cancel` \u53D6\u6D88\u5F85\u56DE\u590D",
   "- `/hd task` \u4EFB\u52A1\uFF08Agent Hub\uFF09\uFF1A\u63D0\u4EA4\u3001\u72EC\u7ACB\u9A8C\u6536\u3001\u8BC4\u5BA1\u7EED\u8DD1\uFF0C\u7ED3\u679C\u63A8\u9001",
   "",
-  "**\u6700\u7701\u4E8B\uFF1A\u957F\u6309\u63A8\u9001 \u2192 \u5F15\u7528 \u2192 \u6253\u5B57\u53D1\u9001**\uFF0C\u5185\u5BB9\u76F4\u63A5\u53D1\u7ED9\u90A3\u4E2A agent\uFF1B\u7B49\u6279\u51C6\u7684\u63A8\u9001\u5F15\u7528\u56DE 1 \u6279\u51C6 / 2 \u59CB\u7EC8\u5141\u8BB8 / 3 \u62D2\u7EDD\u3002\u4EFB\u52A1\u63A8\u9001\u5F15\u7528\u56DE\u590D = \u8BC4\u5BA1\u610F\u89C1\u7EED\u8DD1\u3002",
+  "**\u6700\u7701\u4E8B\uFF1A\u957F\u6309\u63A8\u9001 \u2192 \u5F15\u7528 \u2192 \u6253\u5B57\u53D1\u9001**\uFF0C\u5185\u5BB9\u76F4\u63A5\u53D1\u7ED9\u90A3\u4E2A agent\uFF1B\u7B49\u6279\u51C6\u7684\u63A8\u9001\u5F15\u7528\u56DE 1 \u6279\u51C6 / 2 \u59CB\u7EC8\u5141\u8BB8 / 3 \u62D2\u7EDD\u3002\u5F15\u7528\u56DE\u300C\u770B\u300D\u8BFB\u5168\u5C4F\u3001\u300C\u505C\u300D\u4E2D\u65AD\uFF0C\u8FD9\u4E24\u4E2A\u8BCD\u4E0D\u4F1A\u53D1\u7ED9 agent\uFF08\u771F\u8981\u53D1\u5C31\u7528 /hd send\uFF09\u3002\u4EFB\u52A1\u63A8\u9001\u5F15\u7528\u56DE\u590D = \u8BC4\u5BA1\u610F\u89C1\u7EED\u8DD1\u3002",
   "",
   "\u5176\u4F59\u64CD\u4F5C\uFF1A\u590D\u5236\u76F8\u5E94\u7684 `/hd ...` \u6307\u4EE4\u53D1\u9001\u7ED9\u672C\u673A\u5668\u4EBA\u3002",
   "",
@@ -2307,6 +2310,8 @@ function findQuotedPush(accountId, q) {
 var OK_RE = /^(1|ok|y|yes|好|好的|批准|同意|可以|行|是)$/i;
 var TRUST_RE = /^(2|always|trust|始终|总是|始终允许|一直允许)$/i;
 var NO_RE = /^(3|no|n|不|不行|否|拒绝|取消)$/i;
+var READ_RE = /^(read|r|看|看看|读|读屏|屏幕|全文|更多|详情|看全文|看屏幕)$/i;
+var STOP_RE = /^(stop|停|停下|中断|打断)$/i;
 async function handleHerdrQuoteReply(params) {
   const { account, senderId, isDm, quote, reply, log } = params;
   if (!isDm) return false;
@@ -2324,6 +2329,9 @@ async function handleHerdrQuoteReply(params) {
     return run(`/hd task fu ${ref} ${body}`);
   }
   const t = target.t;
+  if (/^\/hd(\s|$)/i.test(body)) return run(body);
+  if (READ_RE.test(body)) return run(`/hd read ${t} 60`);
+  if (STOP_RE.test(body)) return run(`/hd int ${t}`);
   if (target.kind === "blocked") {
     const tag = target.prompt ? ` #${target.prompt}` : "";
     if (OK_RE.test(body)) return run(`/hd ok ${t}${tag}`);
@@ -2368,16 +2376,17 @@ ${where}` : ""}`;
       const s = turnSummary(r.text);
       if (s.ask) parts.push(`\u4F60\uFF1A${mdInline(s.ask)}`);
       parts.push(mdScreen(s.lines.join("\n")));
+      if (s.more) parts.push(`\uFF08\u53EA\u6458\u4E86\u6700\u540E\u4E00\u6BB5\uFF0C\u524D\u9762\u8FD8\u6709 ${s.more} \u6BB5\uFF0C\u5F15\u7528\u56DE **\u770B** \u8BFB\u5168\u5C4F\uFF09`);
       if (s.title) title = `\u2705 ${t.split("/").pop()}\uFF1A${s.title}`;
     }
   }
   if (c.kind === "blocked") {
     const tag = c.prompt ? ` #${c.prompt}` : "";
-    parts.push(`\u21A9 **\u5F15\u7528\u672C\u6761\u56DE 1** \u6279\u51C6 \xB7 **2** \u59CB\u7EC8\u5141\u8BB8 \xB7 **3** \u62D2\u7EDD
+    parts.push(`\u21A9 **\u5F15\u7528\u672C\u6761\u56DE 1** \u6279\u51C6 \xB7 **2** \u59CB\u7EC8\u5141\u8BB8 \xB7 **3** \u62D2\u7EDD \xB7 **\u770B** \u8BFB\u5C4F
 
-\u5907\u7528 \`/hd ok ${t}${tag}\` \xB7 \u8BFB\u5C4F \`/hd read ${t}\``);
+\u5907\u7528 \`/hd ok ${t}${tag}\``);
   } else if (c.kind !== "exited") {
-    parts.push(`\u21A9 **\u5F15\u7528\u672C\u6761\u56DE\u590D = \u76F4\u63A5\u53D1\u7ED9\u5B83** \xB7 \u8BFB\u5C4F \`/hd read ${t}\``);
+    parts.push(`\u21A9 **\u5F15\u7528\u672C\u6761\u56DE\u590D = \u76F4\u63A5\u53D1\u7ED9\u5B83** \xB7 \u56DE **\u770B** \u8BFB\u5C4F \xB7 \u56DE **\u505C** \u4E2D\u65AD`);
   }
   return {
     text: parts.join("\n\n").slice(0, 5e3),

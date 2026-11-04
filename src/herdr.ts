@@ -190,7 +190,7 @@ const HELP_MD = [
   "- `/hd digest` 今日活动；`/hd cancel` 取消待回复",
   "- `/hd task` 任务（Agent Hub）：提交、独立验收、评审续跑，结果推送",
   "",
-  "**最省事：长按推送 → 引用 → 打字发送**，内容直接发给那个 agent；等批准的推送引用回 1 批准 / 2 始终允许 / 3 拒绝。任务推送引用回复 = 评审意见续跑。",
+  "**最省事：长按推送 → 引用 → 打字发送**，内容直接发给那个 agent；等批准的推送引用回 1 批准 / 2 始终允许 / 3 拒绝。引用回「看」读全屏、「停」中断，这两个词不会发给 agent（真要发就用 /hd send）。任务推送引用回复 = 评审意见续跑。",
   "",
   "其余操作：复制相应的 `/hd ...` 指令发送给本机器人。",
   "",
@@ -612,6 +612,9 @@ export function findQuotedPush(accountId: string, q: HerdrQuote): PushTarget | n
 const OK_RE = /^(1|ok|y|yes|好|好的|批准|同意|可以|行|是)$/i;
 const TRUST_RE = /^(2|always|trust|始终|总是|始终允许|一直允许)$/i;
 const NO_RE = /^(3|no|n|不|不行|否|拒绝|取消)$/i;
+// words meant for the bot, not the agent: read the screen / interrupt
+const READ_RE = /^(read|r|看|看看|读|读屏|屏幕|全文|更多|详情|看全文|看屏幕)$/i;
+const STOP_RE = /^(stop|停|停下|中断|打断)$/i;
 
 /**
  * A DM that quotes one of our pushes: answer that agent (or Hub task) with the message.
@@ -638,6 +641,9 @@ export async function handleHerdrQuoteReply(params: {
     return run(`/hd task fu ${ref} ${body}`);
   }
   const t = target.t!;
+  if (/^\/hd(\s|$)/i.test(body)) return run(body);
+  if (READ_RE.test(body)) return run(`/hd read ${t} 60`);
+  if (STOP_RE.test(body)) return run(`/hd int ${t}`);
   if (target.kind === "blocked") {
     const tag = target.prompt ? ` #${target.prompt}` : "";
     if (OK_RE.test(body)) return run(`/hd ok ${t}${tag}`);
@@ -678,14 +684,15 @@ export async function changeNotice(h: HerdrConfig, c: any): Promise<Notice> {
       const s = turnSummary(r.text);
       if (s.ask) parts.push(`你：${mdInline(s.ask)}`);
       parts.push(mdScreen(s.lines.join("\n")));
+      if (s.more) parts.push(`（只摘了最后一段，前面还有 ${s.more} 段，引用回 **看** 读全屏）`);
       if (s.title) title = `✅ ${t.split("/").pop()}：${s.title}`;
     }
   }
   if (c.kind === "blocked") {
     const tag = c.prompt ? ` #${c.prompt}` : "";
-    parts.push(`↩ **引用本条回 1** 批准 · **2** 始终允许 · **3** 拒绝\n\n备用 \`/hd ok ${t}${tag}\` · 读屏 \`/hd read ${t}\``);
+    parts.push(`↩ **引用本条回 1** 批准 · **2** 始终允许 · **3** 拒绝 · **看** 读屏\n\n备用 \`/hd ok ${t}${tag}\``);
   } else if (c.kind !== "exited") {
-    parts.push(`↩ **引用本条回复 = 直接发给它** · 读屏 \`/hd read ${t}\``);
+    parts.push(`↩ **引用本条回复 = 直接发给它** · 回 **看** 读屏 · 回 **停** 中断`);
   }
   return {
     text: parts.join("\n\n").slice(0, 5000),

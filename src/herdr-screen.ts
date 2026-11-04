@@ -100,6 +100,7 @@ export interface TurnSummary {
   ask: string;      // what the user sent this turn ("" when it is off screen)
   lines: string[];  // the agent's prose from this turn, newest last
   title: string;    // first sentence of the agent's last message
+  more: number;     // earlier prose blocks of this turn left out of `lines`
 }
 
 /**
@@ -137,16 +138,19 @@ export function turnSummary(text: string, maxLines = 12, maxChars = 1200): TurnS
     if (prose.length) prose[prose.length - 1].push(l.replace(/^ {2}/, ""));
   }
   let out: string[] = [];
+  let used = 0;
   for (let b = prose.length - 1; b >= 0; b--) {
     const next = [...prose[b], ...out];
     if (out.length && (next.length > maxLines || next.join("\n").length > maxChars)) break;
     out = next;
+    used++;
   }
+  const more = prose.length - used;
   if (out.length > maxLines) out = out.slice(0, maxLines).concat("…");
   let joined = out.join("\n");
   if (joined.length > maxChars) out = (joined.slice(0, maxChars) + "…").split("\n");
   const last = prose[prose.length - 1]?.join(" ") || "";
   const title = (last.match(/^.{1,60}?[。！？!?]/)?.[0] || (last.length > 50 ? last.slice(0, 50) + "…" : last)).trim();
   if (!out.length) out = readable(text, 8);
-  return { ask: ask.slice(0, 80), lines: out, title };
+  return { ask: ask.slice(0, 80), lines: out, title, more };
 }
