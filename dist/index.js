@@ -2329,7 +2329,10 @@ async function handleHerdrQuoteReply(params) {
     return run(`/hd task fu ${ref} ${body}`);
   }
   const t = target.t;
-  if (/^\/hd(\s|$)/i.test(body)) return run(body);
+  if (/^\/hd(\s|$)/i.test(body)) {
+    const bare = body.match(/^\/hd\s+(read|reply|r|send|s|ok|yes|approve|trust|always|no|esc|int|interrupt|stop|kill)$/i);
+    return run(bare ? `${body} ${t}` : body);
+  }
   if (READ_RE.test(body)) return run(`/hd read ${t} 60`);
   if (STOP_RE.test(body)) return run(`/hd int ${t}`);
   if (target.kind === "blocked") {

@@ -185,6 +185,8 @@ test('"看"/"停" and /hd commands in a quote are for the bot, not typed into th
   assert.deepEqual(r.calls.find((c) => c.p === '/interrupt').body, { t: 'v172/t3c' });
   r = await quoteReply('/hd ls', { key: 'pqk-1' });
   assert.ok(r.calls.some((c) => c.p === '/ls') && !r.calls.some((c) => c.p === '/send'));
+  r = await quoteReply('/hd read', { key: 'pqk-1' }); // no terminal given: the quoted one
+  assert.equal(r.calls.find((c) => c.p === '/read').body.t, 'v172/t3c');
   r = await quoteReply('/compact', { key: 'pqk-1' }); // the agent's own slash commands still go to it
   assert.deepEqual(r.calls.find((c) => c.p === '/send').body, { t: 'v172/t3c', text: '/compact' });
   r = await quoteReply('看一下日志再说', { key: 'pqk-1' });
