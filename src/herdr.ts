@@ -15,8 +15,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { ResolvedDingTalkAccount } from "./types.js";
-import { sendDMMessageWithKey, uploadMediaFile, sendFileMessage } from "./api.js";
-import { markNotice, handleMarkQuote } from "./mark.js";
+import { sendDMMessageWithKey } from "./api.js";
 import { resolveDingTalkCacheFile } from "./cache-dir.js";
 import { readable, turnSummary } from "./herdr-screen.js";
 
@@ -535,10 +534,9 @@ interface PushTarget {
   kind: string;            // change kind, or "task"
   prompt?: number | null;  // blocked: the prompt id the approval answers
   task?: { ref: string; notice: string; decision?: string };
-  mark?: { id: string; machine?: string };   // x3 Mark pushes (src/mark.ts)
 }
 interface PushRecord extends PushTarget { key?: string; at: number }
-interface Notice { text: string; title: string; target?: PushTarget; file?: { name: string; text: string } }
+interface Notice { text: string; title: string; target?: PushTarget }
 
 const PUSH_SPLIT_MAX = 6;
 const PUSH_KEEP_MS = 3 * 24 * 3600_000;
@@ -600,13 +598,8 @@ export function findQuotedPush(accountId: string, q: HerdrQuote): PushTarget | n
   if (q.createdAt && !q.key) {
     const near = list.map((r) => ({ r, d: Math.abs(r.at - q.createdAt!) }))
       .filter((x) => x.d <= 15_000).sort((a, b) => a.d - b.d);
-    const same = (a: PushRecord, b: PushRecord) => a.t === b.t && a.task?.ref === b.task?.ref && a.mark?.id === b.mark?.id;
+    const same = (a: PushRecord, b: PushRecord) => a.t === b.t && a.task?.ref === b.task?.ref;
     if (near.length && (near.length === 1 || near[1].d - near[0].d > 2_000 || same(near[0].r, near[1].r))) return near[0].r;
-  }
-  const mk = String(q.text || "").match(/Mark #([0-9a-f]{4})/);
-  if (mk) {
-    const last = [...list].reverse().find((r) => r.mark?.id === mk[1]);
-    return last || { kind: "mark", mark: { id: mk[1] } };
   }
   const m = String(q.text || "").match(ADDR_RE);
   if (m) {
@@ -640,8 +633,7 @@ export async function handleHerdrQuoteReply(params: {
   const body = String(params.text || "").replace(/^\[引用[^\]\n]*\]\s*/, "").trim();
   if (!body) return false;
   const run =(cmd: string) => handleHerdrCommand({ ...params, text: cmd });
-  log?.info?.(`[dingtalk][herdr] quote-reply → ${target.t || target.task?.ref || `mark #${target.mark?.id}`} (${target.kind})`);
-  if (target.mark) return handleMarkQuote({ ...params, mark: target.mark });
+  log?.info?.(`[dingtalk][herdr] quote-reply → ${target.t || target.task?.ref} (${target.kind})`);
 
   if (target.task) {
     const { ref, notice, decision } = target.task;
@@ -672,10 +664,6 @@ export async function handleHerdrQuoteReply(params: {
 
 /** One change from the bridge as a push message. */
 export async function changeNotice(h: HerdrConfig, c: any): Promise<Notice> {
-  if (c.kind === "mark") {
-    const n = await markNotice(h, c);
-    return { ...n, target: c.event === "failed" || c.event === "answer_failed" ? undefined : { kind: "mark", mark: { id: c.mark, machine: c.machine } } };
-  }
   if (c.kind === "task") {
     const ref = taskRef(c.machine, c.task);
     const decision = c.notice === "decision" && c.decision ? `${c.machine}/${c.decision.id}` : undefined;
@@ -736,21 +724,6 @@ function writeCursor(accountId: string, after: number): void {
   fs.renameSync(f + ".tmp", f);
 }
 
-/** Send a long report as a .md file after its push (a markdown message is capped near 5000 chars). */
-async function pushFileTo(account: ResolvedDingTalkAccount, robotCode: string, users: string[], file: { name: string; text: string }, log?: any) {
-  try {
-    const up = await uploadMediaFile({ clientId: account.clientId!, clientSecret: account.clientSecret!, robotCode,
-      fileBuffer: Buffer.from(file.text, "utf8"), fileName: file.name, fileType: "file" });
-    if (!up.mediaId) { log?.warn?.(`[dingtalk][herdr] file upload failed: ${up.error}`); return; }
-    for (const userId of users) {
-      const r = await sendFileMessage({ clientId: account.clientId!, clientSecret: account.clientSecret!, robotCode, userId, mediaId: up.mediaId, fileName: file.name });
-      if (!r.ok) log?.warn?.(`[dingtalk][herdr] file to ${userId} failed: ${r.error}`);
-    }
-  } catch (err) {
-    log?.warn?.(`[dingtalk][herdr] file push error: ${String(err)}`);
-  }
-}
-
 export function startHerdrNotifier(params: { account: ResolvedDingTalkAccount; abortSignal?: AbortSignal; log?: any }): void {
   const { account, abortSignal, log } = params;
   const h = herdrConfig(account);
@@ -792,7 +765,6 @@ export function startHerdrNotifier(params: { account: ResolvedDingTalkAccount; a
               if (!r.ok) { delivered = false; log?.warn?.(`[dingtalk][herdr] push to ${userId} failed: ${r.error}`); continue; }
               if (n.target) recordPush(account.accountId, { ...n.target, key: r.processQueryKey, at: Date.now() });
             }
-            if (n.file) await pushFileTo(account, robotCode, users, n.file, log); // best effort: the text already went
           }
           // advance even on partial failure after a retry window, so one bad user can't wedge the queue
           if (delivered || (Date.now() - (first.at || 0)) > 10 * 60_000) {

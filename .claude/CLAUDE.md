@@ -4,7 +4,7 @@
 
 ## 状态
 
-- ✅ 插件 1.13.0 x3 Mark（2026-11-09）— 私聊 `/mark 描述` + 截图/录屏/语音 → 172 上 x3analyze `qa/mark/mark.py` 起只读 Claude 排查，结论推回；与 /hd 同白名单；bridge 新增 `/mark/*` 固定操作和 `machines.v172.mark` 配置（scp 附件到 inbox），详见 bridge/README.md
+- ✅ 插件 1.14.0 移除 x3 Mark 钉钉入口（2026-11-09）— 1.13.0 当天加的 `/mark` 与 bridge `/mark/*` 撤掉；Mark 改为游戏内 GM 指令 + herdr 推送（x3analyze qa/mark）
 - ✅ 插件 1.8.1 修 Stream socket 泄漏（2026-11-02）— dingtalk-stream 2.1.4 每次 connect() 换新 socket 不关旧的，SYSTEM disconnect 也只改 connected；约 90s 一次重连，19 天攒到 ~900 条活 socket，reload 后多数消息由旧代码处理（/hd 被转给 AI）。现在重连前摘监听并 terminate 旧 socket；旧实例泄漏的只能 gateway restart 清（11:50 已重启，重连后 443 连接数稳定 4）
 - ✅ 插件 1.8.0 herdr 远程控制（2026-11-02）— 私聊 `/hd` 命令（不经 AI）与 agent 状态推送；gateway 主机新增独立用户 `herdr` 跑 `bridge/herdr-bridge.mjs`（systemd user service，127.0.0.1:8377，token 见 `channels.dingtalk.herdr.token`），只对 `default` 账号和 dm.allowFrom 生效，详见 bridge/README.md
 - ✅ OpenClaw 2026.10.2 + 插件 1.7.18 + linked install（2026-10-13）— 插件改为 `plugins install -l ~/plugins/dingtalk`（10.x 下旧的 npm-symlink 领养会被 doctor 判 install incomplete 并可能被 npm 旧版覆盖）；修复非默认账号路由到 main 的缺陷（1.7.17）；缓存移出安装目录（1.7.18）；systemd 停止策略 330s/KillMode=mixed + 3GB 堆上限；隔离 staging 全量预演，详见升级记录

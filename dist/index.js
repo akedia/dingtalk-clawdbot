@@ -1180,22 +1180,22 @@ loadFromDisk();
 function bucketKey(accountId, conversationId) {
   return `${accountId}:${conversationId}`;
 }
-function touchBucket(key2) {
-  const idx = bucketOrder.indexOf(key2);
+function touchBucket(key) {
+  const idx = bucketOrder.indexOf(key);
   if (idx >= 0) bucketOrder.splice(idx, 1);
-  bucketOrder.push(key2);
+  bucketOrder.push(key);
 }
-function getOrCreateBucket(key2) {
-  let bucket = store.get(key2);
+function getOrCreateBucket(key) {
+  let bucket = store.get(key);
   if (!bucket) {
     while (bucketOrder.length >= MAX_BUCKETS) {
       const oldest = bucketOrder.shift();
       if (oldest) store.delete(oldest);
     }
     bucket = /* @__PURE__ */ new Map();
-    store.set(key2, bucket);
+    store.set(key, bucket);
   }
-  touchBucket(key2);
+  touchBucket(key);
   return bucket;
 }
 function evictBucket(bucket) {
@@ -1263,12 +1263,12 @@ var unionIdCache = /* @__PURE__ */ new Map();
 var UNION_CACHE_MAX = 5e3;
 var spaceIdCache = /* @__PURE__ */ new Map();
 var SPACE_CACHE_MAX = 500;
-function lruSet(map, key2, value, max) {
+function lruSet(map, key, value, max) {
   if (map.size >= max) {
     const first = map.keys().next().value;
     if (first !== void 0) map.delete(first);
   }
-  map.set(key2, value);
+  map.set(key, value);
 }
 function jsonPost2(url, body, headers) {
   return new Promise((resolve, reject) => {
@@ -1550,342 +1550,13 @@ async function resolveQuotedFile(config, params, log) {
 }
 
 // src/monitor.ts
-import * as fs6 from "fs";
-import * as path7 from "path";
-
-// src/herdr.ts
-init_api();
 import * as fs5 from "fs";
 import * as path6 from "path";
 
-// src/mark.ts
+// src/herdr.ts
+init_api();
 import * as fs4 from "fs";
 import * as path5 from "path";
-var CMD_RE = /^\/mark(\s|$)/i;
-var PIC_RE = /\[图片:\s*([^\]\n]+?)\s*\]/g;
-var GO_RE = /^(好了|好|完了|完成|提交|发吧|就这些|go|ok|done)$/i;
-var CANCEL_RE = /^(取消|算了|不要了|cancel)$/i;
-var ID_RE = /^#?([0-9a-f]{4})$/i;
-var IDLE_MS = 6e4;
-var WINDOW_MS = 5 * 6e4;
-var MAX_BYTES = 38 << 20;
-var MAX_FILES = 12;
-var drafts = /* @__PURE__ */ new Map();
-function isMarkCommand(text) {
-  return CMD_RE.test(String(text || "").trim());
-}
-function markConfig(account) {
-  const h = account.config?.herdr;
-  if (!h || h.enabled === false || !h.token) return null;
-  if ((h.account ?? "default") !== account.accountId) return null;
-  return h;
-}
-function allowed(account, h, senderId) {
-  const list = (h.allowFrom?.length ? h.allowFrom : account.config?.dm?.allowFrom ?? []).map(String);
-  return list.filter((s) => s && s !== "*").includes(String(senderId));
-}
-async function markBridge(h, p, body, timeoutMs = 15e4) {
-  const url = (h.bridgeUrl || "http://127.0.0.1:8377").replace(/\/$/, "") + p;
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { authorization: `Bearer ${h.token}`, "content-type": "application/json" },
-      body: JSON.stringify(body ?? {}),
-      signal: ctl.signal
-    });
-    const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
-    if (!res.ok && data.ok !== false) data.ok = false;
-    return data;
-  } catch (err) {
-    return { ok: false, error: `bridge unreachable: ${String(err?.message || err)}` };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-function parseOpts(text) {
-  const opts = {};
-  const note = text.replace(/(?<![\w\u4e00-\u9fff])(role|server|env|serial|角色|服)\s*[=:：]\s*([\w.:-]+)/gi, (_m, k, v) => {
-    const key2 = { \u89D2\u8272: "role", \u670D: "server" }[k] || k.toLowerCase();
-    opts[key2] = v;
-    return " ";
-  }).replace(/\s+/g, " ").trim();
-  return { note, opts };
-}
-function splitPictures(text) {
-  const pictures = [];
-  const rest = String(text || "").replace(PIC_RE, (_m, p) => {
-    pictures.push(p.trim());
-    return " ";
-  });
-  return { text: rest.replace(/\s+/g, " ").trim(), pictures };
-}
-var key = (account, senderId) => `${account.accountId}:${senderId}`;
-function arm(k, d) {
-  if (d.timer) clearTimeout(d.timer);
-  const left = Math.max(1e3, Math.min(IDLE_MS, d.started + WINDOW_MS - Date.now()));
-  d.timer = setTimeout(() => {
-    void submit(k, "auto");
-  }, left);
-}
-async function submit(k, why) {
-  const d = drafts.get(k);
-  if (!d) return;
-  drafts.delete(k);
-  if (d.timer) clearTimeout(d.timer);
-  if (!d.notes.length && !d.voice.length && !d.files.length) {
-    if (why !== "auto") await d.reply("\u8FD9\u4E00\u5355\u4EC0\u4E48\u90FD\u6CA1\u6709\uFF0C\u6CA1\u63D0\u4EA4\u3002");
-    return;
-  }
-  const files = [];
-  const skipped = [];
-  let total = 0;
-  for (const f of d.files.slice(0, MAX_FILES)) {
-    try {
-      const buf = fs4.readFileSync(f);
-      if (total + buf.length > MAX_BYTES) {
-        skipped.push(path5.basename(f));
-        continue;
-      }
-      total += buf.length;
-      files.push({ name: path5.basename(f), b64: buf.toString("base64") });
-    } catch {
-      skipped.push(path5.basename(f));
-    }
-  }
-  if (d.files.length > MAX_FILES) skipped.push(`\u53E6 ${d.files.length - MAX_FILES} \u4E2A`);
-  const r = await markBridge(d.h, "/mark/new", {
-    note: d.notes.join("\n"),
-    voice_text: d.voice.join("\n"),
-    files,
-    role: d.opts.role,
-    server: d.opts.server,
-    env: d.opts.env,
-    live: d.opts.live,
-    serial: d.opts.serial
-  }, 24e4);
-  if (!r.ok) {
-    await d.reply(`\u274C Mark \u6CA1\u63D0\u4EA4\u6210\u529F\uFF1A${String(r.error || "\u672A\u77E5\u9519\u8BEF").slice(0, 300)}
-
-\u539F\u8BDD\u548C\u9644\u4EF6\u8FD8\u5728\uFF0C\u91CD\u53D1 \`/mark ...\` \u5373\u53EF\u3002`, { markdown: true, title: "Mark \u63D0\u4EA4\u5931\u8D25" });
-    return;
-  }
-  const m = r.mark || {};
-  const extra = skipped.length ? `
-
-\u26A0 \u6CA1\u5E26\u4E0A\uFF1A${skipped.join("\u3001")}\uFF08\u8BFB\u4E0D\u5230\u6216\u8D85\u8FC7 ${MAX_BYTES >> 20} MB\uFF09` : "";
-  await d.reply(
-    `\u{1F50D} **Mark #${m.short}** \u5DF2\u63D0\u4EA4\uFF08${files.length} \u4E2A\u9644\u4EF6${d.voice.length ? "\uFF0C\u542B\u8BED\u97F3" : ""}${d.opts.live ? `\uFF0C\u73B0\u573A ${d.opts.live}` : ""}\uFF09\uFF0C\u6392\u67E5\u4E2D\uFF0C\u4E00\u822C\u51E0\u5206\u949F\uFF0C\u5B8C\u6210\u540E\u63A8\u9001\u3002
-
-\u67E5\u770B\u8FDB\u5EA6 \`/mark ${m.short}\` \xB7 \u53D6\u6D88 \`/mark cancel ${m.short}\`${extra}`,
-    { markdown: true, title: `Mark #${m.short} \u5DF2\u63D0\u4EA4` }
-  );
-  d.log?.info?.(`[dingtalk][mark] submitted #${m.short} (${files.length} files, ${total} bytes, ${why})`);
-}
-var STATE_TEXT = {
-  received: "\u5DF2\u6536\u5230",
-  capturing: "\u91C7\u96C6\u73B0\u573A",
-  queued: "\u6392\u961F\u4E2D",
-  investigating: "\u6392\u67E5\u4E2D",
-  done: "\u5B8C\u6210",
-  failed: "\u5931\u8D25"
-};
-function mdShow(m, max = 3800) {
-  const head = [`#### Mark #${m.short} \xB7 ${STATE_TEXT[m.state] || m.state}${m.verdict ? ` \xB7 **${m.verdict}**` : ""}`];
-  if (m.summary) head.push(`> ${m.summary}`);
-  if (m.note) head.push(`\u539F\u8BDD\uFF1A${String(m.note).slice(0, 200)}`);
-  if (m.error) head.push(`\u274C ${String(m.error).slice(0, 300)}`);
-  const body = m.report ? String(m.report).replace(/^\s*结论[:：].*\n?/, "").replace(/^\s*摘要[:：].*\n?/, "").trim() : "";
-  const parts = [head.join("\n\n")];
-  if (body) parts.push(body.length > max ? body.slice(0, max) + `
-
-\u2026\uFF08\u5168\u6587 ${body.length} \u5B57\uFF0C\u89C1\u62A5\u544A\u6587\u4EF6\uFF09` : body);
-  for (const fu of m.followups || []) {
-    parts.push(`**\u8FFD\u95EE ${fu.n}**\uFF1A${String(fu.q).slice(0, 120)}
-
-${fu.state === "done" ? `> ${fu.summary || ""}` : STATE_TEXT[fu.state] || fu.state}`);
-  }
-  return parts.join("\n\n");
-}
-function help() {
-  return [
-    "#### \u{1F4DD} x3 Mark\uFF1A\u622A\u56FE + \u4E00\u53E5\u8BDD \u2192 Claude \u53EA\u8BFB\u6392\u67E5",
-    "- `/mark \u63CF\u8FF0` \u5F00\u5355\uFF0C\u63A5\u7740 5 \u5206\u949F\u5185\u53D1\u622A\u56FE / \u5F55\u5C4F / \u8BED\u97F3 / \u8865\u5145\u6587\u5B57\uFF0C\u56DE **\u597D\u4E86** \u63D0\u4EA4\uFF0860 \u79D2\u6CA1\u65B0\u6D88\u606F\u4E5F\u4F1A\u81EA\u52A8\u63D0\u4EA4\uFF09",
-    "- \u56FE\u6587\u4E00\u8D77\u53D1\uFF08\u5BCC\u6587\u672C\u91CC\u5E26 `/mark \u63CF\u8FF0`\uFF09\u4F1A\u76F4\u63A5\u63D0\u4EA4",
-    "- \u53EF\u5E26 `role=\u89D2\u8272ID server=\u670DID env=beta|dev|prod`",
-    "- `/mark live \u63CF\u8FF0`\uFF1A\u987A\u5E26\u6293 172 \u4E0A MuMu \u6B63\u5728\u8DD1\u7684\u6E38\u620F\uFF08`live editor` \u6293 Editor\uFF09",
-    "- `/mark ls` \u6700\u8FD1 \xB7 `/mark <4\u4F4D\u53F7>` \u8BE6\u60C5 \xB7 `/mark ask <\u53F7> \u95EE\u9898` \u8FFD\u95EE \xB7 `/mark cancel [\u53F7]` \u53D6\u6D88",
-    "- \u5B8C\u6210\u63A8\u9001\u540E **\u5F15\u7528\u90A3\u6761\u56DE\u590D** = \u8FFD\u95EE\uFF1B\u56DE **\u770B** = \u5168\u6587"
-  ].join("\n");
-}
-async function handleMarkCommand(params) {
-  const { account, senderId, isDm, reply, log } = params;
-  if (!isMarkCommand(params.text)) return false;
-  const h = markConfig(account);
-  if (!h) return false;
-  if (!isDm) return true;
-  if (!allowed(account, h, senderId)) {
-    log?.info?.(`[dingtalk][mark] denied /mark from ${senderId}`);
-    return true;
-  }
-  const k = key(account, senderId);
-  const { text: plain, pictures } = splitPictures(params.text.trim().replace(CMD_RE, "").trim());
-  const words = plain.split(/\s+/).filter(Boolean);
-  const sub = (words[0] || "").toLowerCase();
-  if (!words.length && !pictures.length || sub === "help" || sub === "?") {
-    await reply(help(), { markdown: true, title: "Mark \u7528\u6CD5" });
-    return true;
-  }
-  if (sub === "ls" || sub === "list") {
-    const r = await markBridge(h, "/mark/ls", { n: 10 });
-    if (!r.ok) {
-      await reply(`\u274C ${r.error}`);
-      return true;
-    }
-    const rows = (r.data || []).map((m) => `- **#${m.short}** ${STATE_TEXT[m.state] || m.state}${m.verdict ? `\xB7${m.verdict}` : ""}${m.stale ? "\uFF08\u8FDB\u7A0B\u5DF2\u4E0D\u5728\uFF09" : ""} \u2014 ${String(m.summary || m.note || "").slice(0, 60)}`);
-    await reply(rows.length ? `#### \u6700\u8FD1\u7684 Mark
-
-${rows.join("\n")}` : "\u8FD8\u6CA1\u6709 Mark\u3002", { markdown: true, title: "Mark \u5217\u8868" });
-    return true;
-  }
-  if (sub === "go" || sub === "submit") {
-    if (!drafts.has(k)) {
-      await reply("\u6CA1\u6709\u5F00\u7740\u7684 Mark\uFF0C\u5148\u53D1 `/mark \u63CF\u8FF0`\u3002");
-      return true;
-    }
-    await submit(k, "go");
-    return true;
-  }
-  if (sub === "cancel") {
-    const id = words[1]?.match(ID_RE)?.[1];
-    if (!id) {
-      const had = drafts.get(k);
-      if (had?.timer) clearTimeout(had.timer);
-      drafts.delete(k);
-      await reply(had ? "\u5DF2\u4E22\u5F03\u8FD9\u4E00\u5355\uFF08\u8FD8\u6CA1\u63D0\u4EA4\uFF09\u3002" : "\u6CA1\u6709\u5F00\u7740\u7684 Mark\uFF1B\u53D6\u6D88\u5DF2\u63D0\u4EA4\u7684\u7528 `/mark cancel <\u53F7>`\u3002");
-      return true;
-    }
-    const r = await markBridge(h, "/mark/cancel", { id });
-    await reply(r.ok ? `\u5DF2\u53D6\u6D88 Mark #${id}\u3002` : `\u274C ${r.error}`);
-    return true;
-  }
-  if (sub === "ask") {
-    const id = words[1]?.match(ID_RE)?.[1];
-    const q = words.slice(2).join(" ");
-    if (!id || !q) {
-      await reply("\u7528\u6CD5\uFF1A`/mark ask <4\u4F4D\u53F7> \u95EE\u9898`\uFF0C\u6216\u5F15\u7528\u5B8C\u6210\u63A8\u9001\u76F4\u63A5\u56DE\u590D\u3002");
-      return true;
-    }
-    const r = await markBridge(h, "/mark/ask", { id, text: q });
-    await reply(r.ok ? `\u{1F4AC} \u5DF2\u8FFD\u95EE Mark #${id}\uFF0C\u56DE\u7B54\u597D\u4E86\u63A8\u9001\u7ED9\u4F60\u3002` : `\u274C ${r.error}`);
-    return true;
-  }
-  const idOnly = words.length === 1 && !pictures.length ? sub.match(ID_RE)?.[1] : void 0;
-  if (idOnly) {
-    const r = await markBridge(h, "/mark/show", { id: idOnly });
-    await reply(r.ok ? mdShow(r.data) : `\u274C ${r.error}`, { markdown: true, title: `Mark #${idOnly}` });
-    return true;
-  }
-  const opts = {};
-  let rest = plain;
-  const live = rest.match(/^live(?:\s+(mumu|editor))?\b\s*/i);
-  if (live) {
-    opts.live = (live[1] || "mumu").toLowerCase();
-    rest = rest.slice(live[0].length);
-  }
-  const parsed = parseOpts(rest);
-  Object.assign(opts, parsed.opts);
-  const old = drafts.get(k);
-  if (old?.timer) clearTimeout(old.timer);
-  const d = { notes: parsed.note ? [parsed.note] : [], voice: [], files: [...pictures], opts, started: Date.now(), reply, log, h };
-  drafts.set(k, d);
-  if (pictures.length) {
-    await submit(k, "inline");
-    return true;
-  }
-  arm(k, d);
-  await reply(
-    `\u{1F4DD} **Mark \u5DF2\u5F00\u5355**${opts.live ? `\uFF08\u73B0\u573A\uFF1A${opts.live}\uFF09` : ""}\uFF1A${parsed.note || "\uFF08\u8FD8\u6CA1\u6709\u63CF\u8FF0\uFF09"}
-
-\u63A5\u4E0B\u6765 5 \u5206\u949F\u5185\u53D1\u7684 **\u622A\u56FE / \u5F55\u5C4F / \u6587\u4EF6 / \u8BED\u97F3 / \u8865\u5145\u6587\u5B57** \u90FD\u5F52\u5230\u8FD9\u4E00\u5355\uFF1B\u53D1\u5B8C\u56DE **\u597D\u4E86**\uFF0C60 \u79D2\u6CA1\u65B0\u6D88\u606F\u4E5F\u4F1A\u81EA\u52A8\u63D0\u4EA4\u3002\u56DE **\u53D6\u6D88** \u4E22\u5F03\u3002`,
-    { markdown: true, title: "Mark \u5DF2\u5F00\u5355" }
-  );
-  return true;
-}
-async function handleMarkDraftMessage(params) {
-  const { account, senderId, isDm } = params;
-  if (!isDm) return false;
-  const k = key(account, senderId);
-  const d = drafts.get(k);
-  if (!d) return false;
-  if (Date.now() - d.started > WINDOW_MS + 3e4) {
-    await submit(k, "auto");
-    return false;
-  }
-  const raw = String(params.text || "").trim();
-  if (GO_RE.test(raw)) {
-    await submit(k, "go");
-    return true;
-  }
-  if (CANCEL_RE.test(raw)) {
-    if (d.timer) clearTimeout(d.timer);
-    drafts.delete(k);
-    await params.reply("\u5DF2\u4E22\u5F03\u8FD9\u4E00\u5355\uFF08\u8FD8\u6CA1\u63D0\u4EA4\uFF09\u3002");
-    return true;
-  }
-  const { text, pictures } = splitPictures(raw);
-  let got = 0;
-  for (const p of pictures) {
-    d.files.push(p);
-    got++;
-  }
-  if (params.mediaPath) {
-    d.files.push(params.mediaPath);
-    got++;
-  }
-  if (params.messageType === "audio" && text) d.voice.push(text);
-  else if (text && !params.mediaPath && !/^\[(picture|video|file|audio)\]/.test(text)) {
-    const parsed = parseOpts(text);
-    Object.assign(d.opts, parsed.opts);
-    if (parsed.note) d.notes.push(parsed.note);
-  }
-  arm(k, d);
-  const what = got ? `\u{1F4CE} \u5DF2\u6536 ${d.files.length} \u4E2A\u9644\u4EF6` : params.messageType === "audio" ? "\u{1F399} \u5DF2\u6536\u8BED\u97F3" : "\u270F \u5DF2\u8BB0\u4E0B";
-  await params.reply(`${what}\uFF0C\u7EE7\u7EED\u53D1\u6216\u56DE **\u597D\u4E86** \u63D0\u4EA4\u3002`, { markdown: true, title: "Mark" });
-  return true;
-}
-async function markNotice(h, c) {
-  const r = await markBridge(h, "/mark/show", { machine: c.machine, id: c.mark }, 6e4);
-  const m = r.ok ? r.data : { short: c.mark, state: c.event === "failed" ? "failed" : "done", verdict: c.verdict, summary: c.summary, note: c.note, error: c.error };
-  if (c.event === "answer" || c.event === "answer_failed") {
-    const fu = (m.followups || []).find((x) => x.n === c.followup) || {};
-    const ans = String(fu.answer || "").replace(/^\*\*追问\*\*.*\n+/, "").trim();
-    return {
-      text: `#### \u{1F4AC} Mark #${c.mark} \u8FFD\u95EE ${c.followup}
-
-\u4F60\uFF1A${String(c.q || fu.q || "").slice(0, 160)}
-
-` + (c.event === "answer" ? ans.length > 3800 ? ans.slice(0, 3800) + "\n\n\u2026\uFF08\u89C1\u6587\u4EF6\uFF09" : ans : `\u274C ${c.error || fu.error || "\u5931\u8D25"}`) + "\n\n\u21A9 \u5F15\u7528\u672C\u6761\u56DE\u590D = \u7EE7\u7EED\u8FFD\u95EE",
-      title: `Mark #${c.mark} \u8FFD\u95EE\u56DE\u7B54`,
-      file: ans.length > 3800 ? { name: `mark-${c.mark}-ask${c.followup}.md`, text: ans } : void 0
-    };
-  }
-  const icon = c.event === "failed" ? "\u274C" : { \u5DF2\u5B9A\u4F4D: "\u2705", \u975E\u95EE\u9898: "\u{1F7E2}", \u9700\u66F4\u591A\u4FE1\u606F: "\u{1F7E1}", \u672A\u67E5\u660E: "\u26AA" }[m.verdict] || "\u2705";
-  const text = `${icon} ` + mdShow(m) + (c.event === "failed" ? "" : "\n\n\u21A9 \u5F15\u7528\u672C\u6761\u56DE\u590D = \u8FFD\u95EE \xB7 \u56DE **\u770B** = \u5168\u6587");
-  return {
-    text: text.slice(0, 5e3),
-    title: `${icon} Mark #${c.mark} ${m.verdict || (c.event === "failed" ? "\u5931\u8D25" : "")}\uFF1A${String(m.summary || m.note || "").slice(0, 30)}`,
-    file: m.report && String(m.report).length > 3800 ? { name: `mark-${c.mark}-report.md`, text: String(m.report) } : void 0
-  };
-}
-async function handleMarkQuote(params) {
-  const { mark } = params;
-  const body = String(params.text || "").replace(/^\[引用[^\]\n]*\]\s*/, "").trim();
-  if (!body) return false;
-  if (/^(看|看看|全文|详情|read|r)$/i.test(body)) return handleMarkCommand({ ...params, text: `/mark ${mark.id}` });
-  return handleMarkCommand({ ...params, text: `/mark ask ${mark.id} ${body}` });
-}
 
 // src/herdr-screen.ts
 var BOX_RE = /[─━═╌╍┄┅┈┉│┃║╭╮╰╯┌┐└┘├┤┬┴┼▔▁\-=]/g;
@@ -2008,11 +1679,11 @@ function turnSummary(text, maxLines = 12, maxChars = 1200) {
 }
 
 // src/herdr.ts
-var CMD_RE2 = /^\/hd(\s|$)/i;
+var CMD_RE = /^\/hd(\s|$)/i;
 var SCREEN_MAX = 3e3;
 var REPLY_WINDOW_MS = 5 * 6e4;
 function isHerdrCommand(text) {
-  return CMD_RE2.test(text.trim());
+  return CMD_RE.test(text.trim());
 }
 function isHerdrWriteCommand(text) {
   const sub = (text.trim().split(/\s+/)[1] || "").toLowerCase();
@@ -2051,7 +1722,7 @@ async function bridge(h, p, body, timeoutMs = 15e4) {
   }
 }
 var STATE_ICON = { working: "\u{1F7E2}", blocked: "\u{1F534}", error: "\u274C", done: "\u2705", idle: "\u26AA" };
-var STATE_TEXT2 = { working: "\u5DE5\u4F5C\u4E2D", blocked: "\u7B49\u4F60\u5904\u7406", error: "\u51FA\u9519", done: "\u5B8C\u6210", idle: "\u7A7A\u95F2" };
+var STATE_TEXT = { working: "\u5DE5\u4F5C\u4E2D", blocked: "\u7B49\u4F60\u5904\u7406", error: "\u51FA\u9519", done: "\u5B8C\u6210", idle: "\u7A7A\u95F2" };
 var KIND_TEXT = {
   blocked: "\u{1F534} \u9700\u8981\u4F60\u5904\u7406",
   error: "\u274C \u51FA\u9519",
@@ -2097,7 +1768,7 @@ ${mdScreen(readable(d.screen, 10).join("\n"))}` : "";
 
 ${cmdLink("\u770B\u73B0\u6709\u7EC8\u7AEF", "/hd ls")}`;
   }
-  const now = d.state === "blocked" ? `\u5B83\u73B0\u5728\u5728\u95EE\u53E6\u4E00\u4E2A\u95EE\u9898 #${d.prompt}` : `\u5B83\u73B0\u5728${d.state ? `\u300C${STATE_TEXT2[d.state] || d.state}\u300D` : "\u72B6\u6001\u672A\u77E5"}`;
+  const now = d.state === "blocked" ? `\u5B83\u73B0\u5728\u5728\u95EE\u53E6\u4E00\u4E2A\u95EE\u9898 #${d.prompt}` : `\u5B83\u73B0\u5728${d.state ? `\u300C${STATE_TEXT[d.state] || d.state}\u300D` : "\u72B6\u6001\u672A\u77E5"}`;
   const screen = d.screen ? `
 
 ${mdScreen(readable(d.screen, 10).join("\n"))}` : "";
@@ -2119,7 +1790,7 @@ function mdLs(d) {
     for (const t of agents) {
       const icon = STATE_ICON[t.status] || "\u2022";
       const msg = t.msg ? ` \xB7 ${String(t.msg).slice(0, 60)}` : "";
-      out.push(`**${icon} ${t.t}**${t.name ? ` (${t.name})` : ""} ${t.app || t.agent || ""} \xB7 ${t.where || t.cwd || ""} \xB7 ${STATE_TEXT2[t.status] || t.status || ""}${msg}  
+      out.push(`**${icon} ${t.t}**${t.name ? ` (${t.name})` : ""} ${t.app || t.agent || ""} \xB7 ${t.where || t.cwd || ""} \xB7 ${STATE_TEXT[t.status] || t.status || ""}${msg}  
 ${actionsFor(t.t, t.status, t.prompt)}`);
     }
   } else {
@@ -2337,10 +2008,10 @@ var pendingKey = (accountId, senderId) => `${accountId}:${senderId}`;
 async function handleHerdrPendingReply(params) {
   const { account, senderId, isDm, text, reply, log } = params;
   if (!isDm || isHerdrCommand(text)) return false;
-  const key2 = pendingKey(account.accountId, String(senderId));
-  const p = pendingReply.get(key2);
+  const key = pendingKey(account.accountId, String(senderId));
+  const p = pendingReply.get(key);
   if (!p) return false;
-  pendingReply.delete(key2);
+  pendingReply.delete(key);
   if (Date.now() > p.until) return false;
   const h = herdrConfig(account);
   if (!h || !allowList(account, h).includes(String(senderId))) return false;
@@ -2394,7 +2065,7 @@ async function handleHerdrCommand(params) {
 ${readable(d.text, n).join("\n") || "\uFF08\u7A7A\u5C4F\uFF09"}`);
         const row = (await bridge(h, "/ls")).terminals?.find((x) => x.t === t);
         const st = row?.status ?? null;
-        await md(`${t} ${st ? STATE_TEXT2[st] || st : ""}
+        await md(`${t} ${st ? STATE_TEXT[st] || st : ""}
 
 ${actionsFor(t, st, row?.prompt)} \xB7 ${cmdLink("\u66F4\u591A", `/hd read ${t} 80`)}`, `${t} \u64CD\u4F5C`);
         break;
@@ -2452,13 +2123,13 @@ ${actionsFor(t, null)}` : `\u274C ${JSON.stringify(d.out || d.error).slice(0, 30
           break;
         }
         const { args, expect } = splitPromptTag(parts);
-        const key2 = args[0] || "enter";
-        const d = await bridge(h, "/keys", { t, keys: [key2], ...expect ? { expect } : {} });
+        const key = args[0] || "enter";
+        const d = await bridge(h, "/keys", { t, keys: [key], ...expect ? { expect } : {} });
         if (d.stale) {
           await md(staleMd(t, d), `${t} \u63D0\u95EE\u5DF2\u8FC7\u671F`);
           break;
         }
-        await md(d.ok ? `\u{1F44D} ${t} \u5DF2\u6309 ${key2}
+        await md(d.ok ? `\u{1F44D} ${t} \u5DF2\u6309 ${key}
 
 ${actionsFor(t, null)}` : `\u274C ${d.out || d.error}`, `${t} \u5DF2\u6279\u51C6`);
         break;
@@ -2586,7 +2257,7 @@ function pushesOf(accountId) {
   let list = pushLog.get(accountId);
   if (!list) {
     try {
-      list = JSON.parse(fs5.readFileSync(pushFile(accountId), "utf8"));
+      list = JSON.parse(fs4.readFileSync(pushFile(accountId), "utf8"));
     } catch {
       list = [];
     }
@@ -2602,20 +2273,20 @@ function recordPush(accountId, rec) {
   pushLog.set(accountId, kept);
   try {
     const f = pushFile(accountId);
-    fs5.mkdirSync(path6.dirname(f), { recursive: true });
-    fs5.writeFileSync(f + ".tmp", JSON.stringify(kept));
-    fs5.renameSync(f + ".tmp", f);
+    fs4.mkdirSync(path5.dirname(f), { recursive: true });
+    fs4.writeFileSync(f + ".tmp", JSON.stringify(kept));
+    fs4.renameSync(f + ".tmp", f);
   } catch {
   }
 }
 function herdrQuoteOf(msg) {
   const r = msg?.text?.repliedMsg || msg?.quoteMsg || msg?.content?.quote || msg?.content?.referenceMessage;
-  const key2 = msg?.originalProcessQueryKey;
+  const key = msg?.originalProcessQueryKey;
   const msgId = msg?.originalMsgId || r?.msgId;
-  if (!r && !key2 && !msgId) return null;
+  if (!r && !key && !msgId) return null;
   const c = r?.content;
   const text = typeof c === "string" ? c : c?.text || c?.title || (Array.isArray(c?.richText) ? c.richText.map((x) => x?.text || "").join("") : "") || (typeof r?.text === "string" ? r.text : r?.text?.content) || "";
-  return { key: key2, msgId, createdAt: Number(r?.createdAt || r?.createAt) || void 0, text: String(text) };
+  return { key, msgId, createdAt: Number(r?.createdAt || r?.createAt) || void 0, text: String(text) };
 }
 var ADDR_RE = /(?:需要你处理|出错|完成|已退出) · ([A-Za-z0-9._-]+\/t[0-9a-z]+)\b/;
 function findQuotedPush(accountId, q) {
@@ -2626,13 +2297,8 @@ function findQuotedPush(accountId, q) {
   }
   if (q.createdAt && !q.key) {
     const near = list.map((r) => ({ r, d: Math.abs(r.at - q.createdAt) })).filter((x) => x.d <= 15e3).sort((a, b) => a.d - b.d);
-    const same = (a, b) => a.t === b.t && a.task?.ref === b.task?.ref && a.mark?.id === b.mark?.id;
+    const same = (a, b) => a.t === b.t && a.task?.ref === b.task?.ref;
     if (near.length && (near.length === 1 || near[1].d - near[0].d > 2e3 || same(near[0].r, near[1].r))) return near[0].r;
-  }
-  const mk = String(q.text || "").match(/Mark #([0-9a-f]{4})/);
-  if (mk) {
-    const last = [...list].reverse().find((r) => r.mark?.id === mk[1]);
-    return last || { kind: "mark", mark: { id: mk[1] } };
   }
   const m = String(q.text || "").match(ADDR_RE);
   if (m) {
@@ -2656,8 +2322,7 @@ async function handleHerdrQuoteReply(params) {
   const body = String(params.text || "").replace(/^\[引用[^\]\n]*\]\s*/, "").trim();
   if (!body) return false;
   const run = (cmd) => handleHerdrCommand({ ...params, text: cmd });
-  log?.info?.(`[dingtalk][herdr] quote-reply \u2192 ${target.t || target.task?.ref || `mark #${target.mark?.id}`} (${target.kind})`);
-  if (target.mark) return handleMarkQuote({ ...params, mark: target.mark });
+  log?.info?.(`[dingtalk][herdr] quote-reply \u2192 ${target.t || target.task?.ref} (${target.kind})`);
   if (target.task) {
     const { ref, notice, decision } = target.task;
     if (notice === "decision" && decision) return run(`/hd task decide ${decision} ${body}`);
@@ -2686,10 +2351,6 @@ async function handleHerdrQuoteReply(params) {
   return run(`/hd send ${t} ${body}`);
 }
 async function changeNotice(h, c) {
-  if (c.kind === "mark") {
-    const n = await markNotice(h, c);
-    return { ...n, target: c.event === "failed" || c.event === "answer_failed" ? void 0 : { kind: "mark", mark: { id: c.mark, machine: c.machine } } };
-  }
   if (c.kind === "task") {
     const ref = taskRef(c.machine, c.task);
     const decision = c.notice === "decision" && c.decision ? `${c.machine}/${c.decision.id}` : void 0;
@@ -2744,38 +2405,16 @@ function cursorFile(accountId) {
 }
 function readCursor(accountId) {
   try {
-    return JSON.parse(fs5.readFileSync(cursorFile(accountId), "utf8")).after ?? null;
+    return JSON.parse(fs4.readFileSync(cursorFile(accountId), "utf8")).after ?? null;
   } catch {
     return null;
   }
 }
 function writeCursor(accountId, after) {
   const f = cursorFile(accountId);
-  fs5.mkdirSync(path6.dirname(f), { recursive: true });
-  fs5.writeFileSync(f + ".tmp", JSON.stringify({ after, at: (/* @__PURE__ */ new Date()).toISOString() }));
-  fs5.renameSync(f + ".tmp", f);
-}
-async function pushFileTo(account, robotCode, users, file, log) {
-  try {
-    const up = await uploadMediaFile({
-      clientId: account.clientId,
-      clientSecret: account.clientSecret,
-      robotCode,
-      fileBuffer: Buffer.from(file.text, "utf8"),
-      fileName: file.name,
-      fileType: "file"
-    });
-    if (!up.mediaId) {
-      log?.warn?.(`[dingtalk][herdr] file upload failed: ${up.error}`);
-      return;
-    }
-    for (const userId of users) {
-      const r = await sendFileMessage({ clientId: account.clientId, clientSecret: account.clientSecret, robotCode, userId, mediaId: up.mediaId, fileName: file.name });
-      if (!r.ok) log?.warn?.(`[dingtalk][herdr] file to ${userId} failed: ${r.error}`);
-    }
-  } catch (err) {
-    log?.warn?.(`[dingtalk][herdr] file push error: ${String(err)}`);
-  }
+  fs4.mkdirSync(path5.dirname(f), { recursive: true });
+  fs4.writeFileSync(f + ".tmp", JSON.stringify({ after, at: (/* @__PURE__ */ new Date()).toISOString() }));
+  fs4.renameSync(f + ".tmp", f);
 }
 function startHerdrNotifier(params) {
   const { account, abortSignal, log } = params;
@@ -2825,7 +2464,6 @@ function startHerdrNotifier(params) {
               }
               if (n.target) recordPush(account.accountId, { ...n.target, key: r.processQueryKey, at: Date.now() });
             }
-            if (n.file) await pushFileTo(account, robotCode, users, n.file, log);
           }
           if (delivered || Date.now() - (first.at || 0) > 10 * 6e4) {
             after = d.changes[d.changes.length - 1].id;
@@ -2909,8 +2547,8 @@ function simpleHash(str) {
 }
 function isContentDuplicate(senderId, text, log) {
   if (!senderId || !text || text.length < 4) return false;
-  const key2 = `${senderId}:${simpleHash(text)}:${text.length}`;
-  const prev = recentContentHashes.get(key2);
+  const key = `${senderId}:${simpleHash(text)}:${text.length}`;
+  const prev = recentContentHashes.get(key);
   if (prev && Date.now() - prev < CONTENT_DEDUP_WINDOW_MS) {
     log?.info?.("[dingtalk] Content-level duplicate detected: sender=" + senderId + " len=" + text.length);
     return true;
@@ -2919,8 +2557,8 @@ function isContentDuplicate(senderId, text, log) {
 }
 function markContentProcessed(senderId, text) {
   if (!senderId || !text || text.length < 4) return;
-  const key2 = `${senderId}:${simpleHash(text)}:${text.length}`;
-  recentContentHashes.set(key2, Date.now());
+  const key = `${senderId}:${simpleHash(text)}:${text.length}`;
+  recentContentHashes.set(key, Date.now());
   if (recentContentHashes.size > CONTENT_DEDUP_MAX) {
     const cutoff = Date.now() - CONTENT_DEDUP_WINDOW_MS;
     for (const [k, ts] of recentContentHashes) {
@@ -2947,8 +2585,8 @@ var OUTBOUND_TIME_CACHE_MAX = 100;
 var OUTBOUND_TIME_WINDOW_MS = 1e4;
 function loadMsgCache() {
   try {
-    if (fs6.existsSync(MSG_CACHE_FILE)) {
-      const raw = fs6.readFileSync(MSG_CACHE_FILE, "utf-8");
+    if (fs5.existsSync(MSG_CACHE_FILE)) {
+      const raw = fs5.readFileSync(MSG_CACHE_FILE, "utf-8");
       const entries = JSON.parse(raw);
       const cutoff = Date.now() - MSG_CACHE_TTL_MS;
       let loaded = 0;
@@ -2970,10 +2608,10 @@ function scheduleSaveCache() {
   _saveCacheTimer = setTimeout(() => {
     _saveCacheTimer = null;
     try {
-      const dir = path7.dirname(MSG_CACHE_FILE);
-      if (!fs6.existsSync(dir)) fs6.mkdirSync(dir, { recursive: true });
+      const dir = path6.dirname(MSG_CACHE_FILE);
+      if (!fs5.existsSync(dir)) fs5.mkdirSync(dir, { recursive: true });
       const entries = [...msgCache.entries()];
-      fs6.writeFileSync(MSG_CACHE_FILE, JSON.stringify(entries), "utf-8");
+      fs5.writeFileSync(MSG_CACHE_FILE, JSON.stringify(entries), "utf-8");
     } catch (err) {
       console.warn(`[dingtalk] Failed to save msg cache: ${err}`);
     }
@@ -2994,10 +2632,10 @@ function msgCacheSet(msgId, entry) {
   msgCache.set(msgId, entry);
   scheduleSaveCache();
 }
-function cacheOutboundMessage(key2, text) {
-  if (!key2 || !text) return;
+function cacheOutboundMessage(key, text) {
+  if (!key || !text) return;
   const now = Date.now();
-  msgCacheSet(key2, { senderNick: "Jax", text, msgtype: "text", ts: now });
+  msgCacheSet(key, { senderNick: "Jax", text, msgtype: "text", ts: now });
   outboundByTime.push({ ts: now, text });
   if (outboundByTime.length > OUTBOUND_TIME_CACHE_MAX) outboundByTime.shift();
 }
@@ -3054,9 +2692,9 @@ function hasActiveDelivery(queueKey) {
 var SESSION_QUEUE_TTL_MS = 5 * 60 * 1e3;
 function cleanupExpiredSessionQueues() {
   const now = Date.now();
-  for (const [key2, ts] of sessionQueueLastActivity) {
-    if (now - ts > SESSION_QUEUE_TTL_MS && !sessionQueues.has(key2)) {
-      sessionQueueLastActivity.delete(key2);
+  for (const [key, ts] of sessionQueueLastActivity) {
+    if (now - ts > SESSION_QUEUE_TTL_MS && !sessionQueues.has(key)) {
+      sessionQueueLastActivity.delete(key);
     }
   }
 }
@@ -3079,11 +2717,11 @@ async function startDingTalkMonitor(ctx) {
       clearInterval(cleanupInterval);
       clearInterval(queueCleanupInterval);
       const prefix = account.accountId + ":";
-      for (const key2 of sessionQueues.keys()) {
-        if (key2.startsWith(prefix)) sessionQueues.delete(key2);
+      for (const key of sessionQueues.keys()) {
+        if (key.startsWith(prefix)) sessionQueues.delete(key);
       }
-      for (const key2 of sessionQueueLastActivity.keys()) {
-        if (key2.startsWith(prefix)) sessionQueueLastActivity.delete(key2);
+      for (const key of sessionQueueLastActivity.keys()) {
+        if (key.startsWith(prefix)) sessionQueueLastActivity.delete(key);
       }
     });
   }
@@ -3888,12 +3526,7 @@ ${rawBody}`;
     }
   }
   const herdrReply = (text, opts) => !msg.sessionWebhook ? Promise.resolve() : opts?.markdown ? sendMarkdownViaSessionWebhook(msg.sessionWebhook, opts.title || "herdr", text) : sendViaSessionWebhook(msg.sessionWebhook, text);
-  if (isMarkCommand(rawBody)) {
-    if (isContentDuplicate(senderId, rawBody, log)) return;
-    markContentProcessed(senderId, rawBody);
-    const handled = await handleMarkCommand({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
-    if (handled) return;
-  } else if (isHerdrCommand(rawBody)) {
+  if (isHerdrCommand(rawBody)) {
     const isWrite = isHerdrWriteCommand(rawBody);
     if (isWrite && isContentDuplicate(senderId, rawBody, log)) return;
     if (isWrite) markContentProcessed(senderId, rawBody);
@@ -3908,11 +3541,6 @@ ${rawBody}`;
         markContentProcessed(senderId, rawBody);
         return;
       }
-    }
-    const drafted = await handleMarkDraftMessage({ account, senderId, isDm, text: rawBody, mediaPath, messageType: extracted.messageType, log, reply: herdrReply });
-    if (drafted) {
-      markContentProcessed(senderId, rawBody);
-      return;
     }
     const consumed = await handleHerdrPendingReply({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
     if (consumed) {

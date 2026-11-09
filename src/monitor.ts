@@ -7,7 +7,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { resolveDingTalkCacheFile } from "./cache-dir.js";
 import { isHerdrCommand, isHerdrWriteCommand, handleHerdrCommand, handleHerdrPendingReply, handleHerdrQuoteReply, herdrQuoteOf, startHerdrNotifier } from "./herdr.js";
-import { isMarkCommand, handleMarkCommand, handleMarkDraftMessage } from "./mark.js";
 
 // ============================================================================
 // Live runtime config resolution.
@@ -1436,13 +1435,7 @@ async function processInboundMessage(
     : opts?.markdown
       ? sendMarkdownViaSessionWebhook(msg.sessionWebhook, opts.title || "herdr", text)
       : sendViaSessionWebhook(msg.sessionWebhook, text);
-  if (isMarkCommand(rawBody)) {
-    // x3 Mark (src/mark.ts): same allow-list as /hd; a redelivered /mark must not open or submit twice
-    if (isContentDuplicate(senderId, rawBody, log)) return;
-    markContentProcessed(senderId, rawBody);
-    const handled = await handleMarkCommand({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
-    if (handled) return;
-  } else if (isHerdrCommand(rawBody)) {
+  if (isHerdrCommand(rawBody)) {
     const isWrite = isHerdrWriteCommand(rawBody);
     if (isWrite && isContentDuplicate(senderId, rawBody, log)) return;
     if (isWrite) markContentProcessed(senderId, rawBody);
@@ -1456,9 +1449,6 @@ async function processInboundMessage(
       const routed = await handleHerdrQuoteReply({ account, senderId, isDm, text: extracted.text || "", quote, log, reply: herdrReply });
       if (routed) { markContentProcessed(senderId, rawBody); return; }
     }
-    // while a /mark draft is open, its pictures / videos / voice / words join it instead of reaching the AI
-    const drafted = await handleMarkDraftMessage({ account, senderId, isDm, text: rawBody, mediaPath, messageType: extracted.messageType, log, reply: herdrReply });
-    if (drafted) { markContentProcessed(senderId, rawBody); return; }
     // after `/hd reply <t>`, the next plain DM goes to that agent instead of the AI
     const consumed = await handleHerdrPendingReply({ account, senderId, isDm, text: rawBody, log, reply: herdrReply });
     if (consumed) { markContentProcessed(senderId, rawBody); return; }

@@ -5,18 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-11-09
+
+### Removed
+
+- **x3 Mark 的钉钉入口（`/mark`）与 bridge 的 `/mark/*`、Mark 轮询。** 用户认为在钉钉里打命令发截图和直接贴给 Claude
+  没有区别；Mark 改成游戏内 GM 指令 `mark` 带现场提交到本机接收端（x3analyze `qa/mark/recv.py`），排查跑在 herdr 终端里，
+  结果走现有的 herdr 推送（本轮完成推最后一段，引用回复续聊）。代码回到 1.12.1 的状态。
+
 ## [1.13.0] - 2026-11-09
 
 ### Added
 
-- **x3 Mark (`/mark`)：截图 + 一句话 → 只读 Claude 排查，结论推回私聊。** `/mark 描述` 开单，之后 5 分钟内发的
-  截图、录屏、文件、语音（用钉钉的识别文字）和补充文字都归到这一单，回「好了」或静默 60 秒提交；图文一起发直接提交。
-  可带 `role=` `server=` `env=`，`/mark live [mumu|editor]` 让目标机器顺带抓正在运行的游戏现场。
-  `/mark ls`、`/mark <号>`、`/mark ask <号> 问题`、`/mark cancel [号]`；完成推送带结论、摘要和报告节选，
-  长报告另发 .md 文件，引用推送回复即追问、回「看」看全文。与 `/hd` 同一白名单与账号，从不进群、不经 AI。
-- herdr-bridge：`/mark/*` 固定操作（new/ls/show/ask/cancel），只经 `hc exec` 运行配置里的 mark.py 及固定子命令；
-  附件用 herdr 自己的 SSH 密钥 scp 到目标机器的 inbox（单次至多 12 个、40 MB，只有 `/mark/new` 放宽请求体上限）；
-  每 `markPollSeconds`（默认 30）秒取未通知的完成/失败/追问回答，记成 `mark` change 后 ack，同一事件不推两次。
+- x3 Mark（`/mark`）钉钉入口：截图 + 一句话 → 只读 Claude 排查并推回结论；bridge `/mark/*` 与结果轮询。当天被 1.14.0 移除。
 
 ## [1.12.1] - 2026-11-04
 
