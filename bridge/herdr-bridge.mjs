@@ -51,7 +51,7 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')); } catch { return {}; }
 }
-const st = Object.assign({ nextId: 1, changes: [], last: {}, day: null, prompts: {}, promptSeq: 0, finished: {}, hubSeen: {} }, loadState());
+const st = Object.assign({ nextId: 1, changes: [], last: {}, day: null, prompts: {}, promptSeq: 0, finished: {}, hubSeen: {}, markSeen: {} }, loadState());
 let saveTimer = null;
 function writeState() {
   fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
@@ -444,9 +444,168 @@ async function taskRoute(p, body) {
   throw bad('not found', 404);
 }
 
+// ---------- x3 Mark (/mark): screenshot + note → a read-only Claude investigation on a machine ----------
+// The machine runs only its mark.py (qa/mark in x3analyze) through `hc exec`, with a fixed set of
+// subcommands; attachments go over scp with herdr's own SSH key into that machine's inbox.
+
+const MARK_CMDS = new Set(['submit', 'ls', 'show', 'ask', 'status', 'ack', 'cancel']);
+const MARK_ID_RE = /^([0-9a-f]{4}|\d{8}-\d{6}-[0-9a-f]{4})$/;
+export const MARK_MAX_BYTES = 40 << 20;
+const MARK_MAX_FILES = 12;
+const MAX_MARK_SEEN = 2000;
+
+export function markMachines() {
+  return Object.entries(cfg.machines || {}).filter(([, m]) => m?.mark?.python && m?.mark?.script).map(([n]) => n);
+}
+
+function markMachine(name) {
+  const list = markMachines();
+  const m = name ? String(name) : list[0];
+  if (!list.includes(m)) throw bad(`no Mark on machine ${name || '(none)'} (have: ${list.join(', ') || 'none'})`);
+  return m;
+}
+
+export function markArgv(machine, args, timeoutS = 120) {
+  const m = (cfg.machines || {})[machine];
+  if (!m?.mark?.python || !m?.mark?.script) throw bad(`no Mark on machine ${machine || '(none)'}`);
+  if (!MARK_CMDS.has(args[0])) throw bad(`mark command not allowed: ${args[0]}`);
+  const on = machine === cfg.self ? [] : ['--on', machine];
+  return ['exec', ...on, '--json', '--timeout', String(Math.max(1, Math.min(timeoutS, 600))), '--', m.mark.python, m.mark.script, ...args.map(String)];
+}
+
+async function markCall(machine, args, timeoutS = 120) {
+  const r = await hc(markArgv(machine, args, timeoutS), { timeoutMs: (timeoutS + 60) * 1000 });
+  if (r.code && !r.out) return { ok: false, error: (r.err || 'hc exec failed').trim().slice(-400) };
+  return decodeExec(r.out);
+}
+
+/** A file name safe on both ends: last path part, word chars / dot / dash / CJK, never hidden. */
+export function safeName(name, i) {
+  const base = String(name || '').split(/[\\/]/).pop().replace(/[^\w.\-一-鿿]/g, '_').slice(-80);
+  return base && !base.startsWith('.') && base !== 'mark.json' ? base : `file${i}`;
+}
+
+/** The fields mark.py's submit reads from mark.json, each checked; unknown fields are dropped. */
+export function markSpec(body) {
+  const str = (v, max) => { const s = String(v ?? '').trim(); if (s.length > max) throw bad(`text longer than ${max}`); return s; };
+  const num = (v) => { const s = String(v ?? '').trim(); if (s && !/^\d{1,12}$/.test(s)) throw bad('role/server must be digits'); return s || null; };
+  const env = body.env ? String(body.env) : null;
+  if (env && !['dev', 'beta', 'prod'].includes(env)) throw bad('env must be dev, beta or prod');
+  const live = body.live ? String(body.live) : null;
+  if (live && !['mumu', 'editor'].includes(live)) throw bad('live must be mumu or editor');
+  const serial = body.serial ? String(body.serial) : null;
+  if (serial && !/^[\w.:-]{3,40}$/.test(serial)) throw bad('bad serial');
+  const spec = { note: str(body.note, 2000), voice_text: str(body.voice_text, 4000), role: num(body.role), server: num(body.server),
+    env, live, serial, source: 'dingtalk', staff: SOURCE_RE.test(String(body.staff || '')) ? String(body.staff) : null };
+  if (!spec.note && !spec.voice_text && !(Array.isArray(body.files) && body.files.length)) throw bad('a mark needs a note, a voice note or a file');
+  return spec;
+}
+
+function scp(src, dest, timeoutMs = 180000) {
+  return new Promise((resolve) => {
+    execFile('scp', ['-B', '-q', '-r', '-o', 'ConnectTimeout=15', src, dest], { cwd: HOME, timeout: timeoutMs }, (err, stdout, stderr) =>
+      resolve({ code: err ? (err.code ?? 1) : 0, err: String(stderr || err?.message || '') }));
+  });
+}
+
+async function markNew(body) {
+  const machine = markMachine(body.machine);
+  const mm = cfg.machines[machine].mark;
+  if (!mm.ssh || !mm.inbox) throw bad(`Mark on ${machine} has no ssh/inbox for attachments`, 500);
+  const spec = markSpec(body);
+  const files = Array.isArray(body.files) ? body.files : [];
+  if (files.length > MARK_MAX_FILES) throw bad(`at most ${MARK_MAX_FILES} files`);
+  const id = `in-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+  const dir = path.join(HOME, '.cache/herdr-bridge/mark', id);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    let total = 0;
+    const used = new Set();
+    files.forEach((f, i) => {
+      const buf = Buffer.from(String(f?.b64 || ''), 'base64');
+      total += buf.length;
+      if (total > MARK_MAX_BYTES) throw bad(`attachments over ${MARK_MAX_BYTES >> 20} MB`);
+      let name = safeName(f?.name, i + 1);
+      while (used.has(name)) name = `${i + 1}_${name}`;
+      used.add(name);
+      fs.writeFileSync(path.join(dir, name), buf);
+    });
+    fs.writeFileSync(path.join(dir, 'mark.json'), JSON.stringify(spec));
+    const up = await scp(dir, `${mm.ssh}:${mm.inbox}/`);
+    if (up.code) return { ok: false, error: `upload to ${machine} failed: ${up.err.trim().slice(-300)}` };
+    const r = await markCall(machine, ['submit', `${mm.inbox}/${id}`], 120);
+    return r.ok ? { ok: true, machine, mark: r.data } : r;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** A mark status event as the extra fields of a `mark` change. */
+export function markChange(machine, ev) {
+  const cut = (s, k) => (typeof s === 'string' ? s.slice(0, k) : null);
+  return { machine, mark: ev.short, mark_id: ev.id, event: ev.type, verdict: ev.verdict || null, summary: cut(ev.summary, 300),
+    error: cut(ev.error, 300), note: cut(ev.note, 200), followup: ev.followup || null, q: cut(ev.q, 200) };
+}
+
+export function recordMarkEvent(machine, ev) {
+  const key = `${machine}:${ev.id}:${ev.followup || 0}:${ev.type}`;
+  if (st.markSeen[key]) return false;
+  noteChange(`${machine}/mark-${ev.short}`, 'mark', markChange(machine, ev));
+  st.markSeen[key] = Date.now();
+  const keys = Object.keys(st.markSeen);
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_MARK_SEEN))) delete st.markSeen[k];
+  saveNow();
+  return true;
+}
+
+let markBusy = false;
+async function markTick() {
+  if (markBusy) return;
+  markBusy = true;
+  try {
+    for (const m of markMachines()) {
+      const r = await markCall(m, ['status', '--json', '--pending']);
+      if (!r.ok) { log('mark status', m, r.error); continue; }
+      for (const ev of r.data || []) {
+        recordMarkEvent(m, ev);
+        const a = await markCall(m, ['ack', ev.id, ...(ev.followup ? ['--followup', String(ev.followup)] : [])]);
+        if (!a.ok) log('mark ack failed', m, ev.id, a.error);
+      }
+    }
+  } catch (e) {
+    log('mark tick error', String(e?.message || e));
+  } finally {
+    markBusy = false;
+  }
+}
+
+async function markRoute(p, body) {
+  if (p === '/mark/machines') return { ok: true, machines: markMachines() };
+  if (p === '/mark/new') return markNew(body);
+  const machine = markMachine(body.machine);
+  const needId = () => {
+    const id = String(body.id || '').toLowerCase().replace(/^#/, '');
+    if (!MARK_ID_RE.test(id)) throw bad('mark id: the 4 hex chars after #');
+    return id;
+  };
+  if (p === '/mark/ls') {
+    const n = Math.max(1, Math.min(+body.n || 10, 20));
+    return markCall(machine, ['ls', '--json', '-n', String(n)]);
+  }
+  if (p === '/mark/show') return markCall(machine, ['show', needId(), '--json', '--max', '12000']);
+  if (p === '/mark/ask') {
+    const q = String(body.text ?? '').trim();
+    if (!q || q.length > 2000) throw bad('question must be 1..2000 characters');
+    return markCall(machine, ['ask', needId(), q]);
+  }
+  if (p === '/mark/cancel') return markCall(machine, ['cancel', needId()]);
+  throw bad('not found', 404);
+}
+
 async function route(req, url, body) {
   const p = url.pathname;
   if (p.startsWith('/task/')) return taskRoute(p, body);
+  if (p.startsWith('/mark/')) return markRoute(p, body);
   if (p === '/health') { const m = await hc(['machine', 'ls']); return { ok: true, machines: parse(m.out)?.machines || m.err }; }
   if (p === '/ls') {
     const r = await hc(['ls']);
@@ -513,7 +672,8 @@ const server = http.createServer(async (req, res) => {
   const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); };
   if (!okAuth) return send(401, { ok: false, error: 'unauthorized' });
   let raw = '';
-  req.on('data', (c) => { raw += c; if (raw.length > 1 << 20) req.destroy(); });
+  const maxBody = url.pathname === '/mark/new' ? Math.ceil(MARK_MAX_BYTES * 1.4) + (1 << 20) : 1 << 20; // base64 attachments
+  req.on('data', (c) => { raw += c; if (raw.length > maxBody) req.destroy(); });
   req.on('end', async () => {
     try {
       const body = raw ? JSON.parse(raw) : {};
@@ -532,5 +692,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
   if (hubMachines().length) {
     setTimeout(hubTick, 5000);
     setInterval(hubTick, Math.max(10, cfg.hubPollSeconds || 30) * 1000);
+  }
+  if (markMachines().length) {
+    setTimeout(markTick, 8000);
+    setInterval(markTick, Math.max(10, cfg.markPollSeconds || 30) * 1000);
   }
 }

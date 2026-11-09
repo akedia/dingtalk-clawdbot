@@ -93,5 +93,23 @@ validation once per revision) and turns each outbox notice into a `task` change 
 acknowledging it; a notice already recorded is never pushed twice. Each machine keeps its own
 Hub database, worktrees and validation logs; register contexts there with `hub.py register`.
 
+### x3 Mark (`/mark`)
+
+Add `mark` to the machine that runs x3analyze's `qa/mark/mark.py` (absolute paths on that machine; `ssh` is the
+`user@host` herdr's key already reaches, `inbox` must exist there):
+
+```json
+"v172": { "...": "...", "mark": { "python": "C:/Users/<you>/.pyenv/pyenv-win/versions/3.12.9/python.exe",
+                                   "script": "D:/x3analyze/qa/mark/mark.py",
+                                   "ssh": "<you>@<host>", "inbox": "E:/x3-artifacts/marks/inbox" } }
+```
+
+`/mark/new` writes the attachments and a `mark.json` (note, voice text, role/server/env/live, each checked) into a private
+temp folder, `scp -r` it into the inbox, then runs `mark.py submit <inbox>/<id>` through `hc exec`; mark.py starts the
+investigation in the background and the call returns at once. Only `/mark/new` accepts a large body (attachments as
+base64, 40 MB raw at most). The other routes (ls, show, ask, cancel) and the poll (`status --json --pending`, then `ack`)
+run fixed mark.py subcommands with checked ids. Every `markPollSeconds` (default 30) finished marks, failures and
+follow-up answers become `mark` changes, recorded once per event even if an ack fails.
+
 State (`~herdr/.local/state/herdr-bridge/state.json`) keeps change ids across restarts so the
 plugin's cursor stays valid; the first snapshot after a start never produces pushes.
